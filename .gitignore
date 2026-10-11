@@ -20,6 +20,9 @@ local.properties
 *.keystore
 build/
 .gradle/
+.kotlin/
+.pairing-venv/
+__pycache__/
 out/
 captures/
 .externalNativeBuild/

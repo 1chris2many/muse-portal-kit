@@ -24,6 +24,7 @@ class SubscribeParser {
         data class MessageStart(val id: String) : Event
         data class TextAppend(val id: String, val text: String) : Event
         data class MessageDone(val id: String, val fullText: String) : Event
+        data class UserTranscript(val id: String, val text: String) : Event
         data class Busy(val busy: Boolean) : Event
     }
 
@@ -57,6 +58,13 @@ class SubscribeParser {
             "delta.text_append" -> onTextAppend(payload)
             "delta.message_done" -> onMessageDone(payload)
             "message.assistant" -> onWholeMessage(payload)
+            "message.user" -> {
+                val id = payload.strField("message_id") ?: payload.strField("id")
+                val text = (payload.strField("display_text") ?: payload.strField("content") ?: payload.strField("text") ?: "")
+                    .substringBefore("\n[file:").trim()
+                if (id.isNullOrBlank() || text.isBlank() || text == "[Voice note]" || text.startsWith("[file:")) emptyList()
+                else listOf(Event.UserTranscript(id, text))
+            }
             "agent.status" -> onAgentStatus(payload)
             "task.status" -> onTaskStatus(payload)
             else -> emptyList()

@@ -1,13 +1,17 @@
 # muse-portal-kit
 
-> **Repository:** `github.com/hanfang/muse-portal-kit` (public repo to be created)
+> **Repository:** `github.com/hanfang/muse-portal-kit`
 
-Turn a retired **Meta Portal** into a room-scale voice satellite for **Muse**:
-"hey muse" wake word → spoken question → spoken answer (e.g. *"hey muse, what's the weather?"*).
+Turn a retired **Meta Portal** into a foreground, push-to-talk device for **Muse**.
+Hold Talk, speak, and release. Voice notes go to your existing Muse account;
+server transcripts and replies appear in the conversation. Replies use an
+installed offline Android voice. No always-listening microphone or camera.
 
-> **Status:** early prototype. The `:protocol` module (pure JVM Kotlin) implements the
-> Muse gadget session protocol and is unit-tested; the `:app` Android skeleton targets
-> Meta Portal (minSdk 28) and is not yet wired end-to-end.
+> **Status:** hardware-tested development build, not a production release.
+> Android 9 Portal installation, encrypted account provisioning, direct Wi-Fi
+> connection, chat acceptance and reconnect have been observed. Transcript and
+> audible reply acceptance are still being tested. The original unwired
+> always-listening prototype is retained in source but excluded from this build.
 
 ## Architecture
 
@@ -40,17 +44,71 @@ settles the reply → TTS speaks it back.
 
 ## Quick start
 
-> TODO: fill in once the build is green on real hardware.
+Requires JDK 17, Gradle 8.14.3 and Android SDK 35. Configure `ANDROID_HOME`.
 
 ```bash
 # 1. Run the protocol unit tests (no Android SDK needed)
 cd app
-./gradlew :protocol:test
+gradle :protocol:test
 
 # 2. Build the Android app (requires Android SDK)
-# ./gradlew :app:assembleDebug
-# adb install app/build/outputs/apk/debug/app-debug.apk
+gradle :app:assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
+
+## Pairing and first-generation Portal limitations
+
+Obtain an SDK token from [Muse Gadgets](https://gadgets.muse.ai/settings/sdk-tokens).
+Enter it in the app's Settings → Pair device dialog; it is encrypted with Android
+Keystore. Devices with a working GATT peripheral can use the native setup window.
+Native GATT is not available on every Portal firmware even when the Bluetooth
+adapter reports advertising support. Do not root or reset a device to work around it.
+
+For such devices, `tools/pair_via_mac.py` is an optional, one-time Mac CoreBluetooth
+transport for the **same Portal identity**. It uses the official SDK's pairing
+implementation. It is not a Mac Muse installation and exposes no shell or files
+to Muse. After setup it stops; the Portal connects over Wi-Fi without the Mac.
+
+Install the helper dependencies into a local virtual environment:
+
+```sh
+python3 -m venv .pairing-venv
+.pairing-venv/bin/pip install pyobjc-framework-Cocoa pyobjc-framework-CoreBluetooth cryptography 'websockets>=13.1,<16'
+git clone https://github.com/facebookincubator/muse-gadget-sdk ../muse-gadget-sdk
+.pairing-venv/bin/python tools/pair_via_mac.py \
+  --sdk-source ../muse-gadget-sdk --adb /path/to/adb --serial YOUR_PORTAL_SERIAL --name-only
+```
+
+The token prompt does not echo or persist the SDK token on the Mac. The helper reads
+only the Portal's public generated identity and active Wi-Fi name, validates the
+phone's device authorization against Muse, then transfers credentials through USB
+to app-private staging. The app validates, encrypts and deletes the staging file.
+USB debugging and this debuggable APK are required for that development workflow;
+the helper will not work with an arbitrary production APK.
+
+In the Muse phone app enable Settings → Devices → Developer mode and add the
+advertised `MuseGadgetXXXXXX`. Select the actual network the Portal already uses;
+the helper does not reconfigure Wi-Fi or retain its password. Pairing closes after
+10 minutes. Keep the phone app current: [upstream issue 51](https://github.com/facebookincubator/muse-gadget-sdk/issues/51)
+describes an Android MTU-517 provisioning failure, and
+[issue 79](https://github.com/facebookincubator/muse-gadget-sdk/issues/79) describes
+the placeholder-SSID failure. A name-only advertisement avoids observed discovery
+failure with the combined CoreBluetooth name/service advertisement.
+
+## Voice and privacy
+
+- Settings → Test speaker checks the installed offline voice. Stock Portal voices
+  use the ISO-639-2 language code `eng`; standard Android engines generally use `en`.
+- The app does not send reply text to an additional online TTS service. If there
+  is no offline English voice, it displays the limitation rather than silently
+  sending private conversations to another provider.
+- Voice notes are limited to 15 seconds. Their transcript replaces the pending
+  bubble only after the server message ID matches this device's submission ACK.
+  Notes from other clients are not used as substitute transcripts.
+- Conversations and recordings are not written to disk; reopening clears the
+  visible conversation. Failed sends are not automatically replayed.
+- This is a foreground prototype. Background wake words, arbitrary remote
+  commands, OTA, and automatic startup at boot are not enabled.
 
 ## Security policy — tokens and secrets
 
@@ -60,9 +118,9 @@ review and by `.gitignore`:
 - SDK tokens (`mgst_…`), `access_token`/`refresh_token`, keystores, `local.properties`,
   `*.pem`/`*.key` files, and any `*token*.json` / `*credential*.json` config are
   **never committed**. See `.gitignore`.
-- At runtime the app reads tokens **only from a local, gitignored config file**
-  on the device (e.g. app-private storage / `~/.config/muse-voice-satellite/`),
-  never from source code, resources, or build files.
+- Runtime credentials are encrypted in app-private storage using Android Keystore,
+  never embedded in source code, resources, or build files. The USB development
+  importer deletes private plaintext staging after import or validation failure.
 - Test fixtures use obvious placeholders (`mgst_test`, `mgst_x`) — never real tokens.
 
 **If a token leaks** (pasted into a log, committed, screenshotted): revoke it
