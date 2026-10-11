@@ -19,7 +19,7 @@ import com.muse.gadget.util.strField
  * - `message.assistant` delivers a whole message at once;
  * - `agent.status` / `task.status` drive the busy indicator.
  */
-class SubscribeParser {
+class SubscribeParser(private val diagnostic:(String)->Unit = {}) {
     sealed interface Event {
         data class MessageStart(val id: String) : Event
         data class TextAppend(val id: String, val text: String) : Event
@@ -47,9 +47,10 @@ class SubscribeParser {
         } catch (e: Exception) {
             return emptyList() // malformed line: skip like feed_lines does
         }
-        if (root.strField("type") != "event") return emptyList()
+        val isUser = root.strField("event") == "message.user"
+        if (root.strField("type") != "event") {if(isUser)diagnostic("User row ignored: not event type");return emptyList()}
         val seq = (root.field("seq") as? JsonValue.Num)?.raw?.toLongOrNull() ?: return emptyList()
-        if (seq <= lastSeq) return emptyList()
+        if (seq <= lastSeq) {if(isUser)diagnostic("User row ignored: non-increasing sequence");return emptyList()}
         lastSeq = seq
         val name = root.strField("event") ?: return emptyList()
         val payload = root.field("payload") as? JsonValue.Obj ?: return emptyList()
@@ -62,7 +63,10 @@ class SubscribeParser {
                 val id = payload.strField("message_id") ?: payload.strField("id")
                 val text = (payload.strField("display_text") ?: payload.strField("content") ?: payload.strField("text") ?: "")
                     .substringBefore("\n[file:").trim()
-                if (id.isNullOrBlank() || text.isBlank() || text == "[Voice note]" || text.startsWith("[file:")) emptyList()
+                if (id.isNullOrBlank() || text.isBlank() || text == "[Voice note]" || text.startsWith("[file:")) {
+                    diagnostic("User row has no displayable transcript: missingId=${id.isNullOrBlank()}, blank=${text.isBlank()}, placeholder=${text=="[Voice note]"}, fileOnly=${text.startsWith("[file:")}")
+                    emptyList()
+                }
                 else listOf(Event.UserTranscript(id, text))
             }
             "agent.status" -> onAgentStatus(payload)

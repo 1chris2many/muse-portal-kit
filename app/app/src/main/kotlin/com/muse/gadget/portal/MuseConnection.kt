@@ -22,7 +22,8 @@ import java.util.concurrent.TimeUnit
 /** Direct SDK connection. No system.run, file access, OTA or new model instance. */
 class MuseConnection(private val store: DeviceStore, private val status: (String)->Unit,
     private val reply: (String)->Unit, private val readyChanged: (Boolean)->Unit,
-    private val transcript: (String,String)->Unit = {_,_->}) {
+    private val transcript: (String,String)->Unit = {_,_->},
+    private val photo: (((ByteArray?,String?)->Unit)->Unit)? = null) {
     private val http=OkHttpClient.Builder().connectTimeout(15,TimeUnit.SECONDS)
         .readTimeout(30,TimeUnit.SECONDS).pingInterval(20,TimeUnit.SECONDS)
         .followRedirects(false).followSslRedirects(false).build()
@@ -35,8 +36,10 @@ class MuseConnection(private val store: DeviceStore, private val status: (String
     private var registration=""
     private var controlBytes=ByteArray(0)
     private var lines=ByteArray(0)
-    private var parser=SubscribeParser()
+    private fun newParser()=SubscribeParser{android.util.Log.i("MusePortalState",it)}
+    private var parser=newParser()
     private val shown=LinkedHashSet<String>()
+    private val cameraInvocations=LinkedHashSet<String>()
     private val sends=mutableSetOf<Long>()
     private val voiceSends=mutableMapOf<Long,String>()
     private val ackBodies=mutableMapOf<Long,ByteArray>()
@@ -71,7 +74,7 @@ class MuseConnection(private val store: DeviceStore, private val status: (String
         ready=false;readyChanged(false)
         val mine=++epoch
         socket?.cancel();transport=null;handshake=null;controlBytes=ByteArray(0);lines=ByteArray(0)
-        sends.clear();voiceSends.clear();ackBodies.clear();parser=SubscribeParser()
+        sends.clear();voiceSends.clear();ackBodies.clear();parser=newParser()
         try {
             val c=store.read("pairing") ?: throw IllegalStateException("Pair this device first.")
             var result=fetch(c)
@@ -128,13 +131,18 @@ class MuseConnection(private val store: DeviceStore, private val status: (String
         registration=UUID.randomUUID().toString()
         val params=JSONObject().put("node_id",store.nodeId).put("display_name","Muse Portal")
             .put("platform","android").put("model_id","portal").put("version","0.2.0")
-            .put("device_family","homehub").put("is_wakeup_supported",false).put("commands_v2",JSONObject())
+            .put("device_family","homehub").put("is_wakeup_supported",false).put("commands_v2",JSONObject().apply {
+                if(photo!=null)put("camera.capture",JSONObject()
+                    .put("description","Take one RGB still photo on this Portal now. Owner has enabled capture without confirmation. Requires app foreground and camera permission; physical shutter applies. Returns JPEG data_base64 (max 128 KiB). No video or saved files.")
+                    .put("required",JSONObject()).put("optional",JSONObject()).put("timeout_ms",15000))
+            })
         control(JSONObject().put("type","req").put("id",registration).put("method","link.register").put("params",params))
     }
     private fun control(obj: JSONObject) {
         val b=obj.toString().toByteArray()
         val size=ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(b.size).array()
-        send(transport!!.encryptBodyChunk(controlId,size+b))
+        val framed=size+b
+        for(offset in framed.indices step 6144)send(transport!!.encryptBodyChunk(controlId,framed.copyOfRange(offset,minOf(offset+6144,framed.size))))
     }
     private fun receive(f: DecryptedFrame) {
         val data: ByteArray
@@ -178,8 +186,26 @@ class MuseConnection(private val store: DeviceStore, private val status: (String
                         subscribeId=req.streamId;send(req.frames)
                     }
                     if(obj.optString("event") in listOf("link.unpaired","node.unpaired")) {closed=true;readyChanged(false);socket?.cancel();status("Device unpaired in Muse.");return}
-                    if(obj.optString("method")=="link.invoke") control(JSONObject().put("method","link.result").put("id",obj.optString("id"))
-                        .put("ok",false).put("error","This voice/display device exposes no remote commands."))
+                    if(obj.optString("method")=="link.invoke") {
+                        val id=obj.optString("id")
+                        if(id.isNotBlank() && obj.optString("command")=="camera.capture" && photo!=null) {
+                            if(!cameraInvocations.add(id)) {
+                                control(JSONObject().put("method","link.result").put("id",id).put("ok",false)
+                                    .put("error","This capture request was already processed; request a new photo with a new ID."))
+                                continue
+                            }
+                            if(cameraInvocations.size>100)cameraInvocations.remove(cameraInvocations.first())
+                            val mine=epoch
+                            photo.invoke {bytes,error ->dispatch(mine){
+                                val result=JSONObject().put("method","link.result").put("id",id).put("ok",bytes!=null)
+                                if(bytes!=null)result.put("payload",JSONObject().put("mime_type","image/jpeg")
+                                    .put("data_base64",android.util.Base64.encodeToString(bytes,android.util.Base64.NO_WRAP)))
+                                else result.put("error",error?:"Camera unavailable")
+                                control(result)
+                            }}
+                        } else control(JSONObject().put("method","link.result").put("id",id)
+                            .put("ok",false).put("error","Unsupported Portal command."))
+                    }
                 }
             }
             subscribeId -> {
@@ -194,6 +220,17 @@ class MuseConnection(private val store: DeviceStore, private val status: (String
                             val payload=event.optJSONObject("payload")
                             val keys=payload?.keys()?.asSequence()?.filter{it.matches(Regex("[a-z_]{1,40}"))}?.sorted()?.toList()
                             android.util.Log.i("MusePortalState","User event schema: $keys; seqType=${event.opt("seq")?.javaClass?.simpleName}")
+                            val nested=payload?.optJSONObject("payload")
+                            for ((label,obj) in listOf("envelope" to payload,"nested" to nested)) {
+                                val shape=listOf("message_id","display_text","content","text","transcript").joinToString { key ->
+                                    val value=obj?.opt(key)
+                                    "$key:${value?.javaClass?.simpleName}:${(value as? String)?.length?:0}"
+                                }
+                                val nestedKeys=obj?.keys()?.asSequence()?.filter{it.matches(Regex("[a-z_]{1,40}"))}?.sorted()?.toList()
+                                android.util.Log.i("MusePortalState","User $label shape: $shape; keys=$nestedKeys; ready=${obj?.optBoolean("display_text_ready",true)}")
+                                val text=obj?.optString("display_text").orEmpty()
+                                android.util.Log.i("MusePortalState","User $label flags: eventType=${event.optString("type")=="event"}; filePrefix=${text.trim().startsWith("[file:")}; voicePlaceholder=${text.trim()=="[Voice note]"}; visibleLength=${text.substringBefore("\n[file:").trim().length}")
+                            }
                         }
                     } catch(_:Exception) {}
                     parser.feedLine(line).forEach {event ->
@@ -236,6 +273,20 @@ class MuseConnection(private val store: DeviceStore, private val status: (String
                 send(transport!!.encryptBodyChunk(request.streamId,chunk.toByteArray(),endBody=(i+1)*6144>=b.size))
             }
         }catch(_:Exception){fail("Voice send interrupted; not automatically resent")}}
+    }
+    fun sendPhoto(jpeg:ByteArray) {
+        if(!ready){status("Not connected. Photo was not sent.");return}
+        work.execute {try{
+            require(jpeg.size<=128*1024)
+            val body=JSONObject().put("message","Photo from the Portal camera.").put("device_id",store.nodeId).put("output_modality","text")
+                .put("items",org.json.JSONArray().put(JSONObject().put("type","file").put("mime_type","image/jpeg")
+                    .put("filename","portal_photo.jpg").put("data_base64",android.util.Base64.encodeToString(jpeg,android.util.Base64.NO_WRAP))))
+                .toString().toByteArray()
+            val request=transport!!.startStreamRequest("POST",Identity.CHAT_STREAM_PATH,headers=ChatStreams.chatHeaders(UUID.randomUUID().toString()))
+            sends.add(request.streamId);send(request.frames)
+            for(offset in body.indices step 6144)send(transport!!.encryptBodyChunk(request.streamId,
+                body.copyOfRange(offset,minOf(offset+6144,body.size)),endBody=offset+6144>=body.size))
+        }catch(_:Exception){fail("Photo send interrupted; not automatically resent")}}
     }
     private fun fail(message: String) {
         ready=false;readyChanged(false);status("$message. Pending messages will not be resent.")

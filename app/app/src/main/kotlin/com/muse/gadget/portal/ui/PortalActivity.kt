@@ -49,6 +49,9 @@ class PortalActivity: Activity() {
     @Volatile private var foreground=false
     @Volatile private var cancelled=false
     private var capture: Thread?=null
+    private val camera=PortalCamera()
+    private lateinit var cameraState:TextView
+    private var cameraBusy=false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -67,6 +70,13 @@ class PortalActivity: Activity() {
         layout.addView(header)
         audioState=label("Checking speaker…",13f).apply{setTextColor(Color.rgb(153,171,194));setPadding(0,8,0,12)}
         layout.addView(audioState)
+        val cameraRow=LinearLayout(this)
+        cameraState=label("Camera idle · Nova can take photos while this app is open",13f)
+        cameraRow.addView(cameraState,LinearLayout.LayoutParams(0,-2,1f))
+        cameraRow.addView(button("Take & share photo"){
+            takePhoto("You"){bytes,error ->if(bytes!=null){connection.sendPhoto(bytes)}else status(error?:"Camera unavailable")}
+        })
+        layout.addView(cameraRow)
         transcript=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(0,8,0,16)}
         scroll=ScrollView(this).apply{addView(transcript);isFillViewport=true}
         layout.addView(scroll,LinearLayout.LayoutParams(-1,0,1f))
@@ -94,7 +104,7 @@ class PortalActivity: Activity() {
         }},{ready ->runOnUiThread{talk.isEnabled=ready;send.isEnabled=ready}}, {id,text ->runOnUiThread{
             voiceBubbles[id]?.text=text
             android.util.Log.i("MusePortalState","Voice transcript received and displayed.")
-        }})
+        }}, {done ->runOnUiThread{takePhoto("Muse",done)}})
         tts=TextToSpeech(this){result ->runOnUiThread{
             if(result==TextToSpeech.SUCCESS){
                 tts?.setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
@@ -143,6 +153,29 @@ class PortalActivity: Activity() {
         } else if(store.read("pairing")!=null && !staged.exists())connection.connect()
     }
     override fun onStart(){super.onStart();foreground=true}
+    private fun takePhoto(who:String,done:(ByteArray?,String?)->Unit) {
+        if(!foreground){done(null,"Open the Portal app before taking a photo.");return}
+        if(cameraBusy){done(null,"Camera is already taking a photo.");return}
+        if(checkSelfPermission(Manifest.permission.CAMERA)!=PackageManager.PERMISSION_GRANTED){
+            requestPermissions(arrayOf(Manifest.permission.CAMERA),11)
+            done(null,"Camera permission is required on the Portal. Retry after granting it.");return
+        }
+        cameraState.text="CAMERA ON · $who is taking a photo"
+        cameraState.setTextColor(Color.rgb(255,179,104))
+        cameraBusy=true
+        camera.capture {bytes,error ->
+            cameraBusy=false
+            cameraState.text=if(bytes!=null)"Camera idle · Photo taken by $who" else "Camera idle · ${error?:"Capture failed"}"
+            cameraState.setTextColor(Color.rgb(234,240,248))
+            if(bytes!=null){
+                append(who,"Portal photo")
+                val bitmap=android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.size)
+                transcript.addView(ImageView(this).apply{setImageBitmap(bitmap);adjustViewBounds=true;maxHeight=300},LinearLayout.LayoutParams(-1,300))
+                android.util.Log.i("MusePortalState","Camera photo captured; bytes=${bytes.size}; initiatedByUser=${who=="You"}")
+            }
+            done(bytes,error)
+        }
+    }
     private fun status(text:String){
         // Status callbacks never contain bearer/SDK tokens or conversation text.
         android.util.Log.i("MusePortalState",text)
@@ -245,6 +278,6 @@ class PortalActivity: Activity() {
                 runOnUiThread{talk.text="Hold to talk";micState.text="Microphone off · Hold to speak, release to send"}}
         }.also{it.start()}
     }
-    override fun onStop(){foreground=false;cancelled=true;recording=false;tts?.stop();super.onStop()}
+    override fun onStop(){foreground=false;cancelled=true;recording=false;camera.cancel();tts?.stop();super.onStop()}
     override fun onDestroy(){pairing?.stop();connection.close();tts?.shutdown();super.onDestroy()}
 }

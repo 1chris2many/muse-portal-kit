@@ -5,7 +5,7 @@
 Turn a retired **Meta Portal** into a foreground, push-to-talk device for **Muse**.
 Hold Talk, speak, and release. Voice notes go to your existing Muse account;
 server transcripts and replies appear in the conversation. Replies use an
-installed offline Android voice. No always-listening microphone or camera.
+installed offline Android voice. No always-listening microphone or continuous camera stream.
 
 > **Status:** hardware-tested development build, not a production release.
 > Android 9 Portal installation, encrypted account provisioning, direct Wi-Fi
@@ -107,6 +107,15 @@ failure with the combined CoreBluetooth name/service advertisement.
   Notes from other clients are not used as substitute transcripts.
 - Conversations and recordings are not written to disk; reopening clears the
   visible conversation. Failed sends are not automatically replayed.
+- With Android camera permission granted, **Take & share photo** sends a still
+  JPEG to the paired Muse. The same Muse can invoke `camera.capture` without a
+  per-photo confirmation while this app is in the foreground. A visible capture
+  indicator and thumbnail show camera activity. The physical privacy switch is
+  never bypassed. Grant camera permission only if you want both forms of access.
+- Camera results are bounded to 128 KiB, retained only in memory, and returned
+  over the existing encrypted link. Concurrent captures are rejected; repeated
+  request IDs do not take another photo. Camera closes on completion, failure,
+  timeout or backgrounding. No general shell or file tools are exposed.
 - This is a foreground prototype. Background wake words, arbitrary remote
   commands, OTA, and automatic startup at boot are not enabled.
 
