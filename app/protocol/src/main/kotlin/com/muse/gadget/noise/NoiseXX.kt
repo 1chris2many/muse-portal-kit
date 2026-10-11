@@ -7,7 +7,7 @@ import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.PrivateKey
 import java.security.PublicKey
-import java.security.spec.NamedParameterSpec
+import org.bouncycastle.jce.provider.BouncyCastleProvider
 import java.security.spec.PKCS8EncodedKeySpec
 import java.security.spec.X509EncodedKeySpec
 import javax.crypto.KeyAgreement
@@ -58,6 +58,9 @@ fun buildNoiseNonceIv(nonce: Long): ByteArray {
 
 /** X25519 helpers over JCA ("XDH"). Raw 32-byte keys convert via fixed DER prefixes. */
 object X25519 {
+    // Explicit provider: Android 9 lacks the JDK's NamedParameterSpec/XDH stack.
+    // Do not replace the device's global crypto providers.
+    private val provider = BouncyCastleProvider()
     private val PRIV_DER_PREFIX = byteArrayOf(
         0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e,
         0x04, 0x22, 0x04, 0x20,
@@ -67,20 +70,19 @@ object X25519 {
     ).map { it.toByte() }.toByteArray()
 
     fun generateKeypair(): KeyPair {
-        val kpg = KeyPairGenerator.getInstance("XDH")
-        kpg.initialize(NamedParameterSpec("X25519"))
+        val kpg = KeyPairGenerator.getInstance("X25519", provider)
         return kpg.generateKeyPair()
     }
 
     fun privateKeyFromRaw(seed32: ByteArray): PrivateKey {
         require(seed32.size == 32)
-        return KeyFactory.getInstance("XDH")
+        return KeyFactory.getInstance("X25519", provider)
             .generatePrivate(PKCS8EncodedKeySpec(PRIV_DER_PREFIX + seed32))
     }
 
     fun publicKeyFromRaw(raw32: ByteArray): PublicKey {
         require(raw32.size == 32)
-        return KeyFactory.getInstance("XDH")
+        return KeyFactory.getInstance("X25519", provider)
             .generatePublic(X509EncodedKeySpec(PUB_DER_PREFIX + raw32))
     }
 
@@ -100,7 +102,7 @@ object X25519 {
                 throw NoiseProtocolException("x25519: rejected low-order public key")
             }
         }
-        val ka = KeyAgreement.getInstance("XDH")
+        val ka = KeyAgreement.getInstance("X25519", provider)
         ka.init(privateKey)
         ka.doPhase(publicKeyFromRaw(peerPublicRaw32), true)
         val shared = ka.generateSecret()

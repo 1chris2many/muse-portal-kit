@@ -15,7 +15,7 @@ object BleFraming {
     fun encode(message: ByteArray, maxPayload: Int = Identity.MAX_NOTIFY_CHUNK - 4): List<ByteArray> {
         require(maxPayload in 1..252)
         val total = maxOf(1, (message.size + maxPayload - 1) / maxPayload)
-        require(total <= 256) { "message too large for BLE framing" }
+        require(total <= 255) { "message too large for BLE framing" }
         if (message.isEmpty()) {
             return listOf(byteArrayOf(Identity.CHUNK_MAGIC, 0, 1))
         }
@@ -37,18 +37,26 @@ object BleFraming {
         fun feed(chunk: ByteArray): ByteArray? {
             if (poisoned) throw IllegalStateException("BleFraming: poisoned")
             try {
+                if (chunk.isNotEmpty() && chunk[0] != Identity.CHUNK_MAGIC) {
+                    require(chunk.size <= 8192)
+                    reset()
+                    return chunk.copyOf()
+                }
                 require(chunk.size >= 3 && chunk[0] == Identity.CHUNK_MAGIC) { "bad chunk magic" }
                 val index = chunk[1].toInt() and 0xFF
                 val count = chunk[2].toInt() and 0xFF
-                require(count in 1..256) { "bad chunk total" }
+                require(count in 1..255) { "bad chunk total" }
                 require(index < count) { "chunk index out of range" }
                 if (total == -1) total = count
                 require(total == count) { "inconsistent chunk total" }
                 require(!parts.containsKey(index)) { "duplicate chunk" }
                 parts[index] = chunk.copyOfRange(3, chunk.size)
+                require(parts.values.sumOf { it.size } <= 8192) { "message too large" }
                 if (parts.size < total) return null
-                return (0 until total).map { parts[it]!! }
+                val result = (0 until total).map { parts[it]!! }
                     .fold(ByteArray(0)) { acc, b -> acc + b }
+                reset()
+                return result
             } catch (e: Exception) {
                 poisoned = true
                 throw e

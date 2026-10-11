@@ -248,9 +248,10 @@ class BleFramingTest {
     }
 
     @Test
-    fun `bad magic poisons the reassembler`() {
+    fun `truncated framed packet poisons the reassembler`() {
         val r = BleFraming.Reassembler()
-        assertThrows<IllegalArgumentException> { r.feed(byteArrayOf(0x00, 0, 1)) }
+        // The official SDK permits unframed payloads; malformed FE framing is rejected.
+        assertThrows<IllegalArgumentException> { r.feed(byteArrayOf(Identity.CHUNK_MAGIC, 0)) }
         assertThrows<IllegalStateException> { r.feed(byteArrayOf(Identity.CHUNK_MAGIC, 0, 1)) }
     }
 
