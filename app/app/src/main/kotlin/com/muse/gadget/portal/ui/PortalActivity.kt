@@ -21,6 +21,7 @@ import android.text.InputType
 import android.view.MotionEvent
 import android.view.WindowManager
 import android.widget.*
+import com.muse.gadget.audio.SpeechScript
 import com.muse.gadget.audio.VoiceNoteEncoder
 import com.muse.gadget.audio.isEnglishVoiceLanguage
 import com.muse.gadget.portal.*
@@ -44,6 +45,8 @@ class PortalActivity: Activity() {
     private var pairing: NativePairingPeripheral?=null
     private var tts: TextToSpeech?=null
     private var offlineSpeech=false
+    private var speechSerial=0
+    @Volatile private var speechTail:String?=null
     @Volatile private var recording=false
     @Volatile private var recorder: AudioRecord?=null
     @Volatile private var foreground=false
@@ -142,10 +145,11 @@ class PortalActivity: Activity() {
             }
             audioState.text=if(offlineSpeech)"Speaker ready · On-device voice" else "Audio unavailable · No offline English voice found"
             tts?.setOnUtteranceProgressListener(object:UtteranceProgressListener(){
-                override fun onStart(id:String?){runOnUiThread{audioState.text="Speaking · Tap Stop audio to interrupt";deviceStatus.show("SPEAKING","On-device voice · Tap Stop audio to interrupt")};android.util.Log.i("MusePortalState","Speech playback started.")}
-                override fun onDone(id:String?){runOnUiThread{audioState.text="Speaker ready · On-device voice";deviceStatus.show(if(connected)"READY" else "OFFLINE","Hold to talk")};android.util.Log.i("MusePortalState","Speech playback completed.")}
-                override fun onStop(id:String?,interrupted:Boolean){runOnUiThread{if(!recording)deviceStatus.show(if(connected)"READY" else "OFFLINE","Audio stopped")}}
-                @Deprecated("Android legacy callback") override fun onError(id:String?){runOnUiThread{audioState.text="Speech failed · Check audio settings"};android.util.Log.i("MusePortalState","Speech synthesis failed.")}
+                // One reply is many queued utterances and pauses; the status changes once per reply.
+                override fun onStart(id:String?){if(id==null||id.endsWith("-pause"))return;runOnUiThread{audioState.text="Speaking · Tap Stop audio to interrupt";deviceStatus.show("SPEAKING","On-device voice · Tap Stop audio to interrupt")};if(id.endsWith("-0"))android.util.Log.i("MusePortalState","Speech playback started.")}
+                override fun onDone(id:String?){if(id==null||id!=speechTail)return;speechTail=null;runOnUiThread{audioState.text="Speaker ready · On-device voice";deviceStatus.show(if(connected)"READY" else "OFFLINE","Hold to talk")};android.util.Log.i("MusePortalState","Speech playback completed.")}
+                override fun onStop(id:String?,interrupted:Boolean){speechTail=null;runOnUiThread{if(!recording)deviceStatus.show(if(connected)"READY" else "OFFLINE","Audio stopped")}}
+                @Deprecated("Android legacy callback") override fun onError(id:String?){speechTail=null;runOnUiThread{audioState.text="Speech failed · Check audio settings"};android.util.Log.i("MusePortalState","Speech synthesis failed.")}
             })
         }}
         diagnostics()
@@ -223,12 +227,23 @@ class PortalActivity: Activity() {
         scroll.post{scroll.fullScroll(android.view.View.FOCUS_DOWN)}
         return body
     }
+    /** Speaks one already-gated reply as a paced script. Only plain text reaches the engine: no markup, no SSML. */
     private fun speak(text:String){
         if(!offlineSpeech){audioState.text="Audio unavailable · No offline English voice found";return}
-        text.chunked(3500).forEach {part ->
-            if(tts?.speak(part,TextToSpeech.QUEUE_ADD,null,java.util.UUID.randomUUID().toString())==TextToSpeech.ERROR)
-                audioState.text="Speech could not start · Check audio settings"
+        val engine=tts?:return
+        val script=SpeechScript.plan(text,minOf(SpeechScript.MAX_UTTERANCE_CHARS,TextToSpeech.getMaxSpeechInputLength()))
+        if(script.isEmpty())return
+        val serial=++speechSerial
+        speechTail="speech-$serial-${script.lastIndex}"
+        for((index,utterance) in script.withIndex()){
+            val id="speech-$serial-$index"
+            engine.setSpeechRate(utterance.rate);engine.setPitch(utterance.pitch)
+            if(engine.speak(utterance.text,TextToSpeech.QUEUE_ADD,null,id)==TextToSpeech.ERROR){
+                speechTail=null;audioState.text="Speech could not start · Check audio settings";return
+            }
+            if(utterance.pauseAfterMs>0)engine.playSilentUtterance(utterance.pauseAfterMs.toLong(),TextToSpeech.QUEUE_ADD,"$id-pause")
         }
+        android.util.Log.i("MusePortalState","Speech script queued; utterances=${script.size}")
     }
     private fun showSettings(){
         AlertDialog.Builder(this).setTitle("Portal settings").setItems(arrayOf("Test speaker","Stop audio","Reconnect","Pair device","Diagnostics")){_,which ->when(which){
