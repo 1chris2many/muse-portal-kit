@@ -1,4 +1,5 @@
 package com.muse.gadget.portal.wake
+// Historical, unwired prototype. Requires a reviewed model/dependency integration.
 
 import android.content.Context
 import android.util.Log

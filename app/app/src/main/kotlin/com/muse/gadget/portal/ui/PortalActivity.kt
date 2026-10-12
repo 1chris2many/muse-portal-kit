@@ -261,6 +261,12 @@ class PortalActivity: Activity() {
             }.show()
     }
     private fun startPairing(token:String){
+        if(android.os.Build.VERSION.SDK_INT>=31 && listOf(Manifest.permission.BLUETOOTH_CONNECT,Manifest.permission.BLUETOOTH_ADVERTISE)
+                .any{checkSelfPermission(it)!=PackageManager.PERMISSION_GRANTED}) {
+            requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_CONNECT,Manifest.permission.BLUETOOTH_ADVERTISE),12)
+            status("Grant Bluetooth permission, then choose Pair device again.")
+            return
+        }
         try{
             pairing?.stop()
             store.save("sdk",JSONObject().put("token",token))

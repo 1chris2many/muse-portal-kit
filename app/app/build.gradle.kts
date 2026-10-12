@@ -44,7 +44,4 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.11.4")
 }
 
-// Unwired upstream always-listening prototype is not part of this deployment.
-kotlin.sourceSets.getByName("main").kotlin.exclude(
-    "**/voice/VoiceService.kt", "**/wake/OpenWakeWordDetector.kt"
-)
+// Unwired upstream prototypes are preserved in /legacy/android, outside source sets.

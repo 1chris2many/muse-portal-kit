@@ -66,7 +66,7 @@ class NativePairingPeripheral(
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
             main.post {
                 if (newState == BluetoothProfile.STATE_CONNECTED) {
-                    if (peer != null && peer != device) server?.cancelConnection(device) else peer=device
+                    if (peer != null && peer != device) disconnect(device) else peer=device
                 } else if(peer == device) {
                     peer=null; subscribed=false; sending=false; txQueue.clear(); mtu=23
                     worker.execute { setup.disconnected(); assembler.reset() }
@@ -77,10 +77,11 @@ class NativePairingPeripheral(
         override fun onServiceAdded(status: Int, service: BluetoothGattService) {
             if(status!=BluetoothGatt.GATT_SUCCESS) { onStatus("Could not create Bluetooth pairing service."); return }
             // Put name in scan response: service UUID + name exceeds legacy advertisement budget.
-            adapter.bluetoothLeAdvertiser.startAdvertising(
+            try { adapter.bluetoothLeAdvertiser.startAdvertising(
                 AdvertiseSettings.Builder().setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY).setConnectable(true).build(),
                 AdvertiseData.Builder().addServiceUuid(ParcelUuid(Identity.GATT_SERVICE_UUID)).build(),
                 AdvertiseData.Builder().setIncludeDeviceName(true).build(), adv)
+            } catch(_:SecurityException) { onStatus("Bluetooth permission unavailable; pairing stopped.");stop() }
         }
         override fun onDescriptorWriteRequest(device: BluetoothDevice, requestId: Int, descriptor: BluetoothGattDescriptor,
             preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray) {
@@ -88,7 +89,7 @@ class NativePairingPeripheral(
                 val ok=peer==device && descriptor.uuid==ccc && !preparedWrite && offset==0 &&
                     (value.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)||value.contentEquals(BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE))
                 if(ok) subscribed=value.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
-                if(responseNeeded) server?.sendResponse(device,requestId,if(ok)0 else BluetoothGatt.GATT_FAILURE,0,null)
+                if(responseNeeded) respond(device,requestId,if(ok)0 else BluetoothGatt.GATT_FAILURE)
                 pump()
             }
         }
@@ -96,24 +97,25 @@ class NativePairingPeripheral(
             preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray) {
             main.post {
                 val ok=peer==device && characteristic.uuid==Identity.GATT_RX_UUID && !preparedWrite && offset==0 && value.size<=512
-                if(responseNeeded) server?.sendResponse(device,requestId,if(ok)0 else BluetoothGatt.GATT_FAILURE,0,null)
+                if(responseNeeded) respond(device,requestId,if(ok)0 else BluetoothGatt.GATT_FAILURE)
                 if(ok) worker.execute {
                     try { assembler.feed(value)?.let { setup.handle(String(it)).forEach(::enqueue) } }
-                    catch (_: Exception) { assembler.reset(); setup.disconnected(); main.post { server?.cancelConnection(device) }; onStatus("Pairing rejected; restart pairing on the phone.") }
+                    catch (_: Exception) { assembler.reset(); setup.disconnected(); main.post { disconnect(device) }; onStatus("Pairing rejected; restart pairing on the phone.") }
                 }
             }
         }
         override fun onCharacteristicReadRequest(device: BluetoothDevice, requestId: Int, offset: Int,
             characteristic: BluetoothGattCharacteristic) {
             val ok=peer==device && characteristic.uuid==Identity.GATT_TX_UUID && offset==0
-            server?.sendResponse(device,requestId,if(ok)BluetoothGatt.GATT_SUCCESS else BluetoothGatt.GATT_FAILURE,0,byteArrayOf())
+            respond(device,requestId,if(ok)BluetoothGatt.GATT_SUCCESS else BluetoothGatt.GATT_FAILURE)
         }
         override fun onNotificationSent(device: BluetoothDevice, status: Int) { main.post {
             sending=false
-            if(status==0) pump() else {txQueue.clear(); server?.cancelConnection(device)}
+            if(status==0) pump() else {txQueue.clear(); disconnect(device)}
         } }
     }
     fun start() {
+        try {
         check(context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_BLUETOOTH_LE)) {
             "This firmware lacks native BLE support; use USB-assisted setup."
         }
@@ -130,6 +132,10 @@ class NativePairingPeripheral(
         service.addCharacteristic(tx)
         check(server!!.addService(service)) { "Portal rejected the Muse Bluetooth service." }
         main.postDelayed({ stop(); onStatus("Pairing window closed.") },600000)
+        } catch(e:SecurityException) {
+            stop()
+            throw IllegalStateException("Bluetooth permission is required for pairing.",e)
+        }
     }
     private fun enqueue(text: String) { main.post {
         if(server!=null) {txQueue.addAll(BleFraming.encode(text.toByteArray(),minOf(mtu-6,157).coerceAtLeast(1))); pump()}
@@ -139,13 +145,24 @@ class NativePairingPeripheral(
         if(sending || !subscribed || txQueue.isEmpty()) return
         val tx=server?.getService(Identity.GATT_SERVICE_UUID)?.getCharacteristic(Identity.GATT_TX_UUID) ?: return
         tx.value=txQueue.removeFirst(); sending=true
-        if(server?.notifyCharacteristicChanged(device,tx,false)!=true) {sending=false;txQueue.clear();onStatus("Bluetooth notification failed.")}
+        try {
+            if(server?.notifyCharacteristicChanged(device,tx,false)!=true) {sending=false;txQueue.clear();onStatus("Bluetooth notification failed.")}
+        } catch(_:SecurityException) {sending=false;txQueue.clear();onStatus("Bluetooth permission unavailable; pairing stopped.");stop()}
+    }
+    private fun disconnect(device:BluetoothDevice) {
+        try { server?.cancelConnection(device) } catch(_:SecurityException) {onStatus("Bluetooth permission unavailable.")}
+    }
+    private fun respond(device:BluetoothDevice,requestId:Int,status:Int) {
+        try { server?.sendResponse(device,requestId,status,0,byteArrayOf()) }
+        catch(_:SecurityException) {onStatus("Bluetooth permission unavailable; pairing stopped.");stop()}
     }
     fun stop() {
         main.removeCallbacksAndMessages(null)
-        adapter?.bluetoothLeAdvertiser?.stopAdvertising(adv)
-        server?.close();server=null
-        previousName?.let { adapter?.setName(it) }; previousName=null
+        try { adapter?.bluetoothLeAdvertiser?.stopAdvertising(adv) } catch(_:SecurityException) {onStatus("Bluetooth permission unavailable.")}
+        try { server?.close() } catch(_:SecurityException) {onStatus("Bluetooth permission unavailable.")}
+        server=null
+        try { previousName?.let { adapter?.setName(it) } } catch(_:SecurityException) {onStatus("Bluetooth name could not be restored: permission unavailable.")}
+        previousName=null
         worker.shutdown(); txQueue.clear();peer=null
     }
 }

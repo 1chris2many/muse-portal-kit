@@ -1,4 +1,5 @@
 package com.muse.gadget.portal.voice
+// Historical, unwired always-listening prototype. Not part of the deployed app.
 
 import android.app.Notification
 import android.app.NotificationChannel

@@ -16,7 +16,8 @@ an installed offline Android voice. No always-listening microphone or continuous
 > reply display/audio remains blocked when the server omits reply-parent links.
 > Native remote camera invocation depends on the Muse runtime exposing gadget tools;
 > an authenticated USB-host fallback has been verified. The original unwired
-> always-listening prototype is retained in source but excluded from this build.
+> always-listening and BLE skeleton prototypes are retained in `legacy/android/`,
+> outside this app's build and lint source sets.
 
 ## Architecture
 
@@ -108,6 +109,13 @@ device testing. Android 9 first-generation Portal is the tested hardware; other
 Android devices and later Portal variants are not claimed compatible.
 
 ## UI reuse from Muse Gadgets
+
+Owner-requested roadmap (backlog, not enabled):
+[local wake word](https://github.com/1chris2many/muse-portal-kit/issues/1),
+[rich content](https://github.com/1chris2many/muse-portal-kit/issues/2),
+[voice/expressive speech](https://github.com/1chris2many/muse-portal-kit/issues/3),
+[owner recognition](https://github.com/1chris2many/muse-portal-kit/issues/4), and
+[main conversation/thread selection](https://github.com/1chris2many/muse-portal-kit/issues/5).
 
 The official ESP32 UI uses C/LVGL, not Android Views. Its
 [`muse_ui.c`](https://github.com/facebookincubator/muse-gadget-sdk/blob/main/esp32/components/muse/muse_ui.c),

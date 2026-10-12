@@ -1,4 +1,5 @@
 package com.muse.gadget.portal.ble
+// Historical, unwired prototype. Not compiled; use NativePairingPeripheral.
 
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
