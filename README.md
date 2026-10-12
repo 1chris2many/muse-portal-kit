@@ -255,12 +255,35 @@ failure with the combined CoreBluetooth name/service advertisement.
   per-photo confirmation while this app is in the foreground. A visible capture
   indicator and thumbnail show camera activity. The physical privacy switch is
   never bypassed. Grant camera permission only if you want both forms of access.
+- The same Muse can ask the Portal to show one image with `display.draw_url`
+  (see **Rich content from Muse**). Each call needs approval in the Muse app;
+  the image appears as a card in the conversation and clears with it.
 - Camera results are bounded to 128 KiB, retained only in memory, and returned
   over the existing encrypted link. Concurrent captures are rejected; repeated
   request IDs do not take another photo. Camera closes on completion, failure,
   timeout or backgrounding. No general shell or file tools are exposed.
 - This is a foreground prototype. Background wake words, arbitrary remote
   commands, OTA, and automatic startup at boot are not enabled.
+
+## Rich content from Muse
+
+Surveyed against the official SDK on 2026-10-11 for
+[issue 2](https://github.com/1chris2many/muse-portal-kit/issues/2). This is what
+a gadget can receive from Muse today; none of it is Muse mobile-app parity, and
+nothing below imports shared history.
+
+| Path | Status on this Portal |
+|---|---|
+| `display.draw_url` (command Muse invokes with an image URL; the official firmware's name, parameter and result shape) | **Supported, bounded.** https only, public host names only, and the resolver vets every address before the connection uses it: private, loopback, link-local, carrier-grade NAT, multicast, documentation and IPv4-in-IPv6 forms are refused, and a mixed answer is refused whole, for redirect targets too. No cookies or credentials, up to 3 same-scheme redirects, 2 MiB, JPEG/PNG/WebP by magic bytes, source up to 4096 px a side, shown at up to 1280 px, one 30 s budget across redirects and decoding, one at a time, foreground only. Result reports format, size, scale, bytes and time, never the URL. Needs the Muse app's per-call approval and the same runtime invocation support as `camera.capture` (issue 7). |
+| `display.show_animation` (command) | **Supported.** Clears images shown by `display.draw_url`. Images also clear with the Clear button, backgrounding, reconnect and the two-minute privacy timer. Each of those revokes any image still downloading: it is cancelled where possible, rechecked on the UI thread before display, and reported to Muse as `cancelled`, never as shown. |
+| `delta.presentation` on `/chat/subscribe` (images, audio, video, forms attached to a reply; undocumented, shape per [SDK issue 186](https://github.com/facebookincubator/muse-gadget-sdk/issues/186)) | **Announced in words only.** A gadget's token cannot read the files (`path not allowed for device token`), so the Portal shows "Muse sent an image with this reply…" under the same parent-link gate as text, never speaks it, never fetches, and logs the event's field names only. Forms (`data.html`) are never rendered. |
+| Widgets, artifacts, app-style cards | **No API.** The gadget SDK has no such payload; none is claimed or rendered. |
+| Gadget → Muse images | Already supported: **Take & share photo** sends a JPEG item on `/chat/stream`. |
+
+What never happens: no WebView or script execution, no local files, camera or
+host access handed to remote content, no fetch of `sandbox://` paths, no http://
+or private-network fetches on Muse's behalf. Re-check SDK issue 186 for file
+access or inline media and issue 108 for approval-free drawing.
 
 ## Muse development and the command-routing fallback
 
