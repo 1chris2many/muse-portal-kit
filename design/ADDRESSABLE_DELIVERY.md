@@ -95,9 +95,9 @@ Reject a delivery during recording rather than queuing surprise playback later.
 | Option | Decision condition | Current status |
 | --- | --- | --- |
 | Native input metadata | Muse sees the same native input ID and device source and carries them into the delivery tool | Device ID reported visible; native input ID reported absent |
-| Exact uploaded file | Muse hashes the original uploaded voice file; device plus digest resolves exactly one live local request | Primary candidate; runtime confirms file hashing, offline model passes, pipeline byte preservation unverified |
+| Exact uploaded file | Muse hashes the original uploaded voice file; device plus digest resolves exactly one live local request | Secondary voice-only candidate; runtime reports file hashing, offline model passes, pipeline byte preservation unverified |
 | Unique upload filename | The real voice-note filename carries a local random handle preserved in the runtime's trusted uploaded-file metadata | Pipeline filename preservation unverified; no live experiment performed |
-| Canonical request tool result | Muse reads the exact input plus Portal handle and deliberately answers that input through the delivery tool | Proposed fallback; no endpoint or runtime handoff yet |
+| Canonical request tool result | Muse reads the exact input plus Portal handle and deliberately answers that input through the delivery tool | Selected implementation direction after runtime review; no endpoint or verified automatic main-context trigger yet |
 | Shared stream timing | Pick the first answer after a voice note or match nearby timestamps | Rejected because concurrent devices share the stream |
 | New Muse instance or silent thread switch | Create a substitute identity or move the conversation without the owner choosing it | Excluded |
 
@@ -118,14 +118,17 @@ The resolver returns the original input ID and local handle, not a list to guess
 from. Hashes and upload paths are private request metadata, not log fields.
 
 The existing Muse reviewed this design and reports that its Linux runtime can
-read and SHA-256 hash the uploaded file. The selected prototype is exact-file
-lookup, with a filename handle optional only after preservation is verified.
+read and SHA-256 hash the uploaded file. Its final review favors the canonical
+request tool result because that covers both voice and typed inputs without an
+upload byte-preservation dependency. Keep exact-file lookup as an optional
+voice-only adapter, with a filename handle optional only after preservation is
+verified.
 The receiver's device identity and the runtime envelope identity must match
 exactly, or have an authenticated pairing-derived mapping; no prefix guessing.
 `conversation_id` is a configured binding to the existing main context until a
 real thread-selection contract exists. It is not a fabricated native session ID.
 
-This candidate restores the voice path only. Typed text requires its own canonical
+The exact-file candidate restores the voice path only. Typed text requires its own canonical
 input lookup or an exposed native message ID. The lookup must include the actual
 text being answered and the one-time handle together, and be invoked as an
 explicit request-response workflow. A file hash must never authorize a text,
@@ -137,12 +140,23 @@ handle must stay in the existing Muse context and must not become fake user
 messages. A runtime report that device IDs are visible does not establish that
 those IDs reach the response stream or that the upload pipeline preserves bytes.
 
-Activation therefore depends on one genuine owner-initiated Portal voice note:
-compare the Portal's pre-upload digest to the exact runtime file, then return one
-explicitly bound answer. If bytes differ, keep the gate closed and inspect the
-documented upload transformation. Do not weaken to fuzzy matching or insert a
-synthetic prompt. A failure here is a specific upload-contract problem, not a
-reason to assume every Portal feature needs upstream support.
+For the selected route, Muse confirms that an action it invokes from its main
+conversation returns its tool result into that same authoring context. This is
+not evidence that an unsolicited tool result can wake that context. Muse suggests
+a content-free pending-request notice as a push trigger; the platform's support
+for that trigger is unverified. Do not implement that suggestion as a synthetic
+user message or a new polling job. Prove an existing supported main-context
+trigger, or limit the first version to a main-context-initiated request read and
+label it as manual. An inbound notice must identify a specific request, never
+authorize selection of the first or latest pending input.
+
+Activation needs a genuine owner-initiated Portal request: confirm the exact
+canonical input and handle reach the existing authoring context, receive one
+explicitly bound answer, then exercise revocation and other-device isolation.
+If using the optional file-hash adapter, additionally compare the pre-upload
+digest with the runtime file; transformed bytes fail closed. Do not weaken to
+fuzzy matching or insert a synthetic prompt. These are specific integration
+checks, not a reason to assume every Portal feature needs upstream support.
 
 ## Rich content
 
@@ -195,6 +209,12 @@ Transfer underlying bytes through the authenticated bridge with size/MIME/hash
 checks. Do not export the runtime filesystem or expose credentials just to render
 an attachment. Hosted artifact links remain client-session-dependent until a
 specific private export is verified.
+
+An additional report's authorship was disputed during review. Its claims about
+specific widget-state APIs, extra widget types and static/full-stack artifact
+export are not accepted as verified runtime capabilities. Confirm those formats
+directly before adding them to the supported contract. Never make a private
+artifact public merely to obtain a Portal URL.
 
 The proposed order is addressed replies first; images, TTS files and native reply
 options next; documents/artifacts and data-driven widgets after export checks;
