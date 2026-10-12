@@ -84,7 +84,8 @@ class PortalDevelopment:
         if action in ("portal.requests.read","portal.deliver","portal.delivery.status"):
             path={"portal.requests.read":"/requests/read","portal.deliver":"/deliver","portal.delivery.status":"/delivery/status"}[action]
             body=json.dumps(args,ensure_ascii=False,separators=(",",":")).encode()
-            if len(body)>65536:raise ValueError("Portal delivery payload exceeds 64 KiB")
+            maximum=6*1024*1024 if action=="portal.deliver" else 65536
+            if len(body)>maximum:raise ValueError("Portal delivery payload exceeds action size bound")
             return self.bridge_request(path,body)
         if action=="portal.files":
             names=self.run(["/usr/bin/git","ls-files","--cached","--others","--exclude-standard"],cwd=self.workspace).splitlines()

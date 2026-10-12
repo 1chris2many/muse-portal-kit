@@ -52,7 +52,7 @@ class PortalReplyRouterTest {
         val router=PortalReplyRouter();router.acknowledge("voice",true)
         val linked=router.receivePresentation(SubscribeParser.Event.Presentation("m1",listOf("image"),"voice"))
         assertTrue(linked.display);assertFalse(linked.speak)
-        assertEquals("Muse sent an image with this reply. This Portal shows text only; open the Muse app to see it.",linked.text)
+        assertEquals("Muse sent an image with this reply. Open the Muse app to view this attachment.",linked.text)
         val again=router.receivePresentation(SubscribeParser.Event.Presentation("m1",listOf("image"),"voice"))
         assertFalse(again.display)
         for(event in listOf(SubscribeParser.Event.Presentation("h1",listOf("video")),SubscribeParser.Event.Presentation("h2",listOf("html"),"other-device"))) {
@@ -67,6 +67,6 @@ class PortalReplyRouterTest {
         val released=router.acknowledge("typed",true)
         assertEquals(1,released.size);assertTrue(released.single().display);assertFalse(released.single().speak)
         assertEquals(PortalReplyRouter.presentationNote(listOf("audio","html")),released.single().text)
-        assertEquals("Muse sent rich content with this reply. This Portal shows text only; open the Muse app to see it.",PortalReplyRouter.presentationNote(emptyList()))
+        assertEquals("Muse sent rich content with this reply. Open the Muse app to view this attachment.",PortalReplyRouter.presentationNote(emptyList()))
     }
 }

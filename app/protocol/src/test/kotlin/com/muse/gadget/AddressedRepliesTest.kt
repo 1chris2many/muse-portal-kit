@@ -1,6 +1,7 @@
 package com.muse.gadget
 
 import com.muse.gadget.session.AddressedReplies
+import com.muse.gadget.session.InlineMedia
 import org.junit.jupiter.api.Test
 import kotlin.test.*
 
@@ -145,5 +146,54 @@ class AddressedRepliesTest {
         for (i in 1..20) gate.begin("r$i", AddressedReplies.Kind.TEXT, "input$i")
         gate.acknowledge("req", "native-req")
         reject("no_unique_canonical_request") { gate.read(exactText = "actual input") }
+    }
+    private val mp3 = InlineMedia.Identity("audio/mpeg", "a".repeat(64), 100)
+    private val image = InlineMedia.Identity("image/png", "b".repeat(64), 100)
+    @Test fun `media final is bound to same voice grant and immutable byte digest`() {
+        input(); gate.read(exactText = "actual input")
+        val media = envelope().copy(text = null, audio = mp3, image = image)
+        assertTrue(gate.accept(media, false).speak)
+        assertTrue(gate.accept(media, false).duplicate)
+        reject("delivery_conflict") { gate.accept(media.copy(audio = mp3.copy(sha256 = "c".repeat(64))), false) }
+        reject("delivery_conflict") { gate.accept(media.copy(image = image.copy(bytes = 101)), false) }
+        assertNull(gate.acceptNative("native-req", true))
+    }
+    @Test fun `text and exact option label inputs never authorize an audio export`() {
+        input(kind = AddressedReplies.Kind.TEXT, text = "Yes"); gate.read(exactText = "Yes")
+        reject("audio_not_authorized") { gate.accept(envelope().copy(audio = mp3), false) }
+        assertFalse(gate.accept(envelope().copy(text = null, image = image), false).speak)
+    }
+    @Test fun `stop audio revokes an in-flight export without losing request`() {
+        input(); gate.read(exactText = "actual input"); gate.stopAudio()
+        reject("audio_not_authorized") { gate.accept(envelope().copy(audio = mp3), false) }
+        assertFalse(gate.accept(envelope(), false).speak)
+    }
+    @Test fun `media decode cannot outlive clear expiration or another final`() {
+        input(); gate.read(exactText = "actual input")
+        val media = envelope().copy(audio = mp3, image = image)
+        gate.acceptNative("native-req", true)
+        reject("unknown_request") { gate.accept(media, false) }
+        input("req2"); gate.read(exactText = "actual input")
+        val second = envelope("req2", "d2").copy(image = image)
+        time += 120_000
+        reject("unknown_request") { gate.accept(second, false) }
+        gate.revoke(true)
+        reject("wrong_destination") { gate.accept(media, false) }
+    }
+    @Test fun `cross request thread and unobserved mobile media cannot render`() {
+        input(); gate.read(exactText = "actual input")
+        val media = envelope().copy(image = image)
+        reject("wrong_destination") { gate.accept(media.copy(conversationId = "phone-thread"), false) }
+        reject("unknown_request") { gate.accept(media.copy(requestId = "mobile-input"), false) }
+        input("req2", text = "second")
+        reject("canonical_read_required") { gate.accept(media.copy(requestId = "req2", inputMessageId = "native-req2"), false) }
+        assertFalse(gate.accept(media.copy(text = null), false).speak)
+    }
+    @Test fun `unbounded or false media identity never consumes a request`() {
+        input(); gate.read(exactText = "actual input")
+        reject("invalid_audio") { gate.accept(envelope().copy(audio = mp3.copy(mime = "audio/wav")), false) }
+        reject("invalid_image") { gate.accept(envelope().copy(image = image.copy(bytes = InlineMedia.MAX_BYTES + 1)), false) }
+        reject("invalid_image") { gate.accept(envelope().copy(image = image.copy(sha256 = "caller-chosen-id")), false) }
+        assertTrue(gate.accept(envelope().copy(audio = mp3), false).speak)
     }
 }

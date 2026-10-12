@@ -39,7 +39,7 @@ class PortalReplyRouter(now: () -> Long = { System.nanoTime() / 1_000_000 }) {
                 }
             }.distinct()
             val what = if (names.isEmpty()) "rich content" else names.joinToString(" and ")
-            return "Muse sent $what with this reply. This Portal shows text only; open the Muse app to see it."
+            return "Muse sent $what with this reply. Open the Muse app to view this attachment."
         }
     }
 

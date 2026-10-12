@@ -49,6 +49,14 @@ class PortalDevelopmentTests(unittest.TestCase):
         with patch.object(self.dev,"run") as run:
             with self.assertRaises(ValueError):self.dev.bridge_request("http://other-host/",b"")
             run.assert_not_called()
+    def test_inline_media_delivery_has_separate_bounded_body(self):
+        with patch.object(self.dev,"bridge_request",return_value={"ok":True}) as proxy:
+            self.dev.dispatch("portal.deliver",{"content":[{"type":"image","data_base64":"a"*100000}]})
+            self.assertEqual("/deliver",proxy.call_args.args[0])
+            proxy.reset_mock()
+            with self.assertRaises(ValueError):
+                self.dev.dispatch("portal.deliver",{"content":[{"data_base64":"a"*(6*1024*1024)}]})
+            proxy.assert_not_called()
     def test_install_requires_passed_build(self):
         job="a"*32;(self.dev.state/job).mkdir()
         self.dev.record(job,{"status":"failed"})

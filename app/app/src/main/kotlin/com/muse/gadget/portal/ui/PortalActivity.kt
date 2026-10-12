@@ -42,6 +42,7 @@ import com.muse.gadget.session.AddressedReplies
 import com.muse.gadget.options.ReplyOptionsGate
 import com.muse.gadget.portal.PortalCamera
 import com.muse.gadget.portal.PortalImageFetcher
+import com.muse.gadget.portal.PortalAudioPlayer
 import com.muse.gadget.portal.wake.VoskWakeWordDetector
 import com.muse.gadget.portal.ble.NativePairingPeripheral
 import org.json.JSONObject
@@ -67,6 +68,7 @@ class PortalActivity : Activity() {
     private val captureGeneration = CaptureGeneration()
     private val camera = PortalCamera()
     private val imageFetcher = PortalImageFetcher()
+    private val exportedAudio = PortalAudioPlayer()
     private val displayGuard = com.muse.gadget.display.DisplayGuard()
     @Volatile private var imageBusy = false
     private var cameraBusy = false
@@ -113,7 +115,7 @@ class PortalActivity : Activity() {
         if (muted && (recording || wakeHandoff)) cancelCapture()
         wakePolicy.update(wakeEnabled, foreground, connected,
             checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED,
-            muted, recording || capture?.isAlive == true || tts?.isSpeaking == true || speechTail != null || pttHeld || wakeHandoff)
+            muted, recording || capture?.isAlive == true || tts?.isSpeaking == true || exportedAudio.busy || speechTail != null || pttHeld || wakeHandoff)
         val lease = wakePolicy.lease(android.os.SystemClock.elapsedRealtime())
         ui.wakeButton.text = if (!wakeEnabled) "Wake off" else if (lease == null) "Wake paused"
             else if (wakeDetector.isListening) "Wake on" else "Wake starting"
@@ -123,7 +125,7 @@ class PortalActivity : Activity() {
             val audio = getSystemService(AUDIO_SERVICE) as AudioManager
             wakePolicy.update(wakeEnabled, foreground, connected,
                 checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED,
-                audio.isMicrophoneMute, recording || capture?.isAlive == true || tts?.isSpeaking == true || speechTail != null || pttHeld || wakeHandoff)
+                audio.isMicrophoneMute, recording || capture?.isAlive == true || tts?.isSpeaking == true || exportedAudio.busy || speechTail != null || pttHeld || wakeHandoff)
             if (wakePolicy.claim(lease, score, android.os.SystemClock.elapsedRealtime())) {
                 wakeHandoff = true
                 startRecording(handsFree = true)
@@ -177,7 +179,7 @@ class PortalActivity : Activity() {
         }
         voiceBubbles.clear()
         speechTail = null
-        tts?.stop()
+        tts?.stop(); exportedAudio.stop()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -210,7 +212,7 @@ class PortalActivity : Activity() {
                 if (!ready) {
                     revokeImages(); cancelCapture(); pauseWake()
                     addressed.revoke(foreground); optionGate.clear(); optionView.clear()
-                    addressedSpeech = null; speechTail = null; tts?.stop()
+                    addressedSpeech = null; speechTail = null; tts?.stop(); exportedAudio.stop()
                 }
                 connected = ready
                 ui.setConnectionState(ready)
@@ -256,7 +258,7 @@ class PortalActivity : Activity() {
             cancelCapture()
             pauseWake()
             speechTail = null
-            tts?.stop()
+            tts?.stop(); exportedAudio.stop()
             ui.setAudioState("AUDIO STOPPED", "Playback stopped", PortalPalette.TEXT_SECONDARY)
         }
         ui.cameraButton.setOnClickListener {
@@ -327,14 +329,21 @@ class PortalActivity : Activity() {
 
     /** One UI-thread transaction prevents Clear/background from racing a queued remote render. */
     private fun bridgeDelivery(path: String, args: JSONObject): JSONObject {
+        val imageGeneration = displayGuard.begin()
+        val prepared = if (path == "/deliver") AddressedDeliveryJson.prepare(args) else null
         val done = java.util.concurrent.CountDownLatch(1)
         val cancelled = java.util.concurrent.atomic.AtomicBoolean(false)
+        val ownership = java.util.concurrent.atomic.AtomicInteger(0)
         var result: JSONObject? = null
         var error: AddressedReplies.Rejected? = null
         val deadline = android.os.SystemClock.elapsedRealtime() + 3000
         runOnUiThread {
+            var claimed = false
+            var transferred = false
             try {
                 if (cancelled.get() || android.os.SystemClock.elapsedRealtime() >= deadline) throw AddressedReplies.Rejected("delivery_timeout_query_same_id")
+                claimed = ownership.compareAndSet(0, 1)
+                if (!claimed) throw AddressedReplies.Rejected("delivery_timeout_query_same_id")
                 if (!foreground || !connected) throw AddressedReplies.Rejected("not_foreground_connected")
                 result = when (path) {
                     "/requests/read" -> {
@@ -343,10 +352,14 @@ class PortalActivity : Activity() {
                     }
                     "/delivery/status" -> AddressedDeliveryJson.receipt(addressed.receipt(AddressedDeliveryJson.deliveryId(args))).put("ok", true)
                     "/deliver" -> {
-                        val envelope = AddressedDeliveryJson.envelope(args)
+                        val envelope = prepared!!.envelope
+                        if (prepared.image != null && !displayGuard.valid(imageGeneration)) throw AddressedReplies.Rejected("display_revoked")
                         val accepted = addressed.accept(envelope, recording || capture?.isAlive == true || wakeHandoff)
                         if (!accepted.duplicate) {
+                            transferred = true
                             accepted.text?.let { appendMessage("Muse", it) }
+                            prepared.image?.let { appendPhoto("Muse", it) }
+                            if (prepared.audio != null && accepted.text == null) appendMessage("Muse", "Voice reply")
                             accepted.options?.let { labels ->
                                 optionGate.openRequest(accepted.requestId)
                                 val card = optionGate.present(ReplyOptionsGate.Delivery(envelope.deliveryId,
@@ -364,7 +377,8 @@ class PortalActivity : Activity() {
                                 }
                             }
                             addressed.rendered(envelope.deliveryId)
-                            if (accepted.speak) accepted.text?.let { speak(it, envelope.deliveryId) }
+                            if (prepared.audio != null) playExportedAudio(prepared.audio, envelope, accepted.expiresAtMs)
+                            else if (accepted.speak) accepted.text?.let { speak(it, envelope.deliveryId) }
                         }
                         AddressedDeliveryJson.receipt(addressed.receipt(envelope.deliveryId)).put("ok", true).put("duplicate", accepted.duplicate)
                     }
@@ -372,10 +386,16 @@ class PortalActivity : Activity() {
                 }
             } catch (e: AddressedReplies.Rejected) { error = e }
               catch (_: Exception) { error = AddressedReplies.Rejected("delivery_failed_query_same_id") }
-            finally { done.countDown() }
+            finally {
+                if (claimed && !transferred) prepared?.discard()
+                else if (!claimed && ownership.compareAndSet(0, 2)) prepared?.discard()
+                done.countDown()
+            }
         }
         if (!done.await(4, java.util.concurrent.TimeUnit.SECONDS)) {
-            cancelled.set(true); throw AddressedReplies.Rejected("delivery_timeout_query_same_id")
+            cancelled.set(true)
+            if (ownership.compareAndSet(0, 2)) prepared?.discard()
+            throw AddressedReplies.Rejected("delivery_timeout_query_same_id")
         }
         error?.let { throw it }
         return result ?: throw AddressedReplies.Rejected("delivery_failed_query_same_id")
@@ -601,6 +621,7 @@ class PortalActivity : Activity() {
     private fun speak(text: String, deliveryId: String? = null) {
         wakeHandoff = false
         pauseWake()
+        exportedAudio.stop()
         addressedSpeech?.let { addressed.speech(it, "cancelled") }
         addressedSpeech = deliveryId
         if (!offlineSpeech) {
@@ -630,6 +651,28 @@ class PortalActivity : Activity() {
         }
         android.util.Log.i("MusePortalState", "Speech script queued; utterances=${script.size}")
         deliveryId?.let { addressed.speech(it, "queued") }
+    }
+
+    private fun playExportedAudio(bytes: ByteArray, envelope: AddressedReplies.Envelope, expiresAtMs: Long) {
+        wakeHandoff = false
+        pauseWake()
+        addressedSpeech?.let { addressed.speech(it, "cancelled") }
+        addressedSpeech = null; speechTail = null; tts?.stop()
+        exportedAudio.play(bytes, {
+            foreground && connected && !recording && !wakeHandoff && addressed.generation == envelope.generation &&
+                System.nanoTime() / 1_000_000 < expiresAtMs &&
+                try { addressed.receipt(envelope.deliveryId).speech in setOf("eligible", "queued", "started") }
+                catch (_: AddressedReplies.Rejected) { false }
+        }, { state ->
+            addressed.speech(envelope.deliveryId, state)
+            when (state) {
+                "queued" -> ui.setAudioState("PREPARING VOICE", "Muse audio export", PortalPalette.WARNING)
+                "started" -> ui.setAudioState("MUSE SPEAKING", "Tap Stop audio to interrupt", PortalPalette.ACCENT)
+                "completed" -> ui.setAudioState("AUDIO READY", "Reply finished", PortalPalette.TEXT_SECONDARY)
+                "cancelled" -> ui.setAudioState("AUDIO STOPPED", "Playback stopped", PortalPalette.TEXT_SECONDARY)
+                "failed" -> ui.setAudioState("AUDIO UNAVAILABLE", "This audio export could not be played", PortalPalette.DANGER)
+            }
+        })
     }
 
     private fun showSettings() {
@@ -669,7 +712,7 @@ class PortalActivity : Activity() {
             pauseWake()
             cancelCapture()
             speechTail = null
-            tts?.stop()
+            tts?.stop(); exportedAudio.stop()
         }
         option("Reconnect", "Open a fresh secure connection to Muse") { connection.connect() }
         option("Pair device", "Pair this Portal with your existing Muse account") { showPairing() }
@@ -769,7 +812,7 @@ class PortalActivity : Activity() {
         wakeHandoff = false
         addressed.stopAudio(); addressedSpeech = null
         speechTail = null
-        tts?.stop()
+        tts?.stop(); exportedAudio.stop()
         cancelled = false
         recording = true
         val captureToken = captureGeneration.begin()
@@ -873,6 +916,7 @@ class PortalActivity : Activity() {
     }
 
     override fun onDestroy() {
+        exportedAudio.stop()
         localBridge?.close()
         pairing?.stop()
         connection.close()

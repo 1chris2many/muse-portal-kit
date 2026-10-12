@@ -51,7 +51,8 @@ class LocalPortalBridge(context:Context,private val capture:((ByteArray?,String?
                             val lengths=lines.filter { it.startsWith("Content-Length:",true) }
                             check(lengths.size==1)
                             val length=lengths.single().substringAfter(':').trim().toInt()
-                            check(length in 2..65536)
+                            val maximum = if (route == "POST /deliver HTTP/1.1") com.muse.gadget.session.InlineMedia.MAX_BODY_BYTES else 65536
+                            check(length in 2..maximum)
                             val body=ByteArray(length)
                             var offset=0
                             while(offset<length) { val n=input.read(body,offset,length-offset);check(n>0);offset+=n }
