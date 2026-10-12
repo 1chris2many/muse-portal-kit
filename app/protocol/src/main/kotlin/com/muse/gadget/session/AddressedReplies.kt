@@ -20,7 +20,8 @@ class AddressedReplies(
         val uploadSha256: String?, val expiresAtMs: Long)
     data class Envelope(val version: Int, val deliveryId: String, val deviceId: String,
         val conversationId: String, val generation: String, val requestId: String,
-        val inputMessageId: String, val text: String?, val options: List<String>?)
+        val inputMessageId: String, val text: String?, val options: List<String>?,
+        val image: InlineMedia.Identity? = null, val audio: InlineMedia.Identity? = null)
     data class Accepted(val duplicate: Boolean, val speak: Boolean, val requestId: String,
         val text: String?, val options: List<String>?, val expiresAtMs: Long)
     data class Receipt(val state: String, val speech: String)
@@ -93,9 +94,11 @@ class AddressedReplies(
         if (!foreground) reject("background")
         if (raw.version != 1 || !validId(raw.deliveryId) || !validId(raw.requestId) || !validId(raw.inputMessageId)) reject("invalid_envelope")
         if (raw.deviceId != deviceId || raw.conversationId != conversationId || raw.generation != generation) reject("wrong_destination")
-        if (raw.text == null && raw.options == null) reject("empty_content")
+        if (raw.text == null && raw.options == null && raw.image == null && raw.audio == null) reject("empty_content")
         if (raw.text != null && (raw.text.isBlank() || raw.text.toByteArray().size > 16_000)) reject("invalid_text")
         if (raw.options != null && ReplyOptionsPolicy.checkLabels(raw.options) !is ReplyOptionsPolicy.Parse.Ok) reject("invalid_options")
+        if (raw.image != null && !InlineMedia.valid(raw.image, false)) reject("invalid_image")
+        if (raw.audio != null && !InlineMedia.valid(raw.audio, true)) reject("invalid_audio")
         val envelope = raw.copy(options = raw.options?.toList())
         receipts[raw.deliveryId]?.let {
             if (it.envelope != envelope) reject("delivery_conflict")
@@ -103,10 +106,11 @@ class AddressedReplies(
         }
         val input = inputs[raw.requestId] ?: reject("unknown_request")
         if (input.messageId != raw.inputMessageId || !input.read) reject("canonical_read_required")
+        if (raw.audio != null && (input.kind != Kind.VOICE || !input.speechAllowed)) reject("audio_not_authorized")
         if (recording) reject("recording_retry_same_delivery")
         if (receipts.size >= 100) reject("receipt_capacity_clear_required")
         inputs.remove(raw.requestId)
-        val speak = input.kind == Kind.VOICE && input.speechAllowed && raw.text != null
+        val speak = input.kind == Kind.VOICE && input.speechAllowed && (raw.text != null || raw.audio != null)
         receipts[raw.deliveryId] = Seen(envelope, Receipt("accepted", if (speak) "eligible" else "not_authorized"))
         return Accepted(false, speak, raw.requestId, raw.text, raw.options?.toList(), input.expires)
     }

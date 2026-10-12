@@ -70,7 +70,7 @@ class MuseConnection(private val store: DeviceStore, private val status: (String
     private fun fetch(c: JSONObject): Pair<Int,List<VmInfo>> {
         val req=Request.Builder().url(root(c)+Identity.FETCH_VMS_PATH)
             .header("Authorization","Bearer "+c.getString("access_token"))
-            .header("X-API-Version","1.0.0").header("User-Agent","muse-portal/0.4.1").build()
+            .header("X-API-Version","1.0.0").header("User-Agent","muse-portal/0.4.2").build()
         http.newCall(req).execute().use { r ->
             return r.code to if(r.isSuccessful) MuseAccountApi.parseVmList(r.body?.string()?:"") else emptyList()
         }
@@ -141,7 +141,7 @@ class MuseConnection(private val store: DeviceStore, private val status: (String
         controlId=request.streamId;send(request.frames)
         registration=UUID.randomUUID().toString()
         val params=JSONObject().put("node_id",store.nodeId).put("display_name","Muse Portal")
-            .put("platform","android").put("model_id","portal").put("version","0.4.1")
+            .put("platform","android").put("model_id","portal").put("version","0.4.2")
             .put("device_family","homehub").put("is_wakeup_supported",false).put("commands_v2",JSONObject().apply {
                 if(photo!=null)put("camera.capture",JSONObject()
                     .put("description","Take one RGB still photo on this Portal now. Owner has enabled capture without confirmation. Requires app foreground and camera permission; physical shutter applies. Returns JPEG data_base64 (max 128 KiB). No video or saved files.")

@@ -49,6 +49,42 @@ class PortalSmokeInstrumentation:Instrumentation() {
                 report.putBoolean("wake_native_library_loaded",true)
                 report.putBoolean("wake_model_packaged",true)
             }
+            if(options.getString("media_decode")=="true") {
+                // Generated fixture bytes only. Exercise actual Android decoders,
+                // without presenting an image, playing audio or invoking Muse.
+                val bitmap = android.graphics.Bitmap.createBitmap(2, 2, android.graphics.Bitmap.Config.ARGB_8888)
+                val encoded = java.io.ByteArrayOutputStream()
+                check(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, encoded))
+                bitmap.recycle()
+                val payload = org.json.JSONObject().put("version",1).put("device_id","fixture")
+                    .put("conversation_id","existing-main").put("generation","fixture").put("request_id","fixture")
+                    .put("input_message_id","fixture").put("delivery_id","fixture")
+                    .put("content",org.json.JSONArray().put(org.json.JSONObject().put("type","image").put("mime_type","image/png")
+                        .put("data_base64",android.util.Base64.encodeToString(encoded.toByteArray(),android.util.Base64.NO_WRAP))))
+                val prepared = AddressedDeliveryJson.prepare(payload)
+                check(prepared.image?.width == 2 && prepared.image?.height == 2)
+                prepared.discard()
+                report.putBoolean("actual_bitmap_decoder",true)
+                // 0.15s silent MP3 generated locally with ffmpeg, not a person/voice recording.
+                val fixture = "//MgxAAAAANIAAAAAExBTUU0LjBVVVVVVVVVVVVVVVVVTEFNRTQuMFVVVVVVVVVVVVVVVf/zIsQnAAADSAAAAABVVVVVVVVVVVVVVVVVVVVVVVVVVUxBTUU0LjBVVVVVVVVVVVVVVVVV//MgxE8AAANIAAAAAFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVf/zIMR2AAADSAAAAABVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVX/8yDEnQAAA0gAAAAAVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//MixMQAAANIAAAAAFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVX/8yDE2AAAA0gAAAAAVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//MgxNgAAANIAAAAAFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVQ=="
+                val source = PortalAudioPlayer.MemorySource(android.util.Base64.decode(fixture,android.util.Base64.NO_WRAP))
+                val latch = CountDownLatch(1)
+                var player: android.media.MediaPlayer? = null
+                var duration = 0
+                try {
+                    runOnMainSync {
+                        player = android.media.MediaPlayer().apply {
+                            setOnPreparedListener { duration = it.duration; latch.countDown() }
+                            setOnErrorListener { _,_,_ -> latch.countDown(); true }
+                            setDataSource(source)
+                            prepareAsync() // Deliberately never call start().
+                        }
+                    }
+                    check(latch.await(8,TimeUnit.SECONDS) && duration in 1..3000) { "Actual MP3 decoder did not prepare fixture" }
+                    report.putInt("mp3_fixture_duration_ms",duration)
+                    report.putBoolean("audio_played",false)
+                } finally { runOnMainSync { player?.release(); source.close() } }
+            }
             if(options.getString("camera")=="true") {
                 val latch=CountDownLatch(1)
                 var size=0;var failure:String?=null

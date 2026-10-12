@@ -111,7 +111,7 @@ CPU/thermal load and end-to-end owner interaction still require acceptance testi
 Do not treat an APK build as acoustic validation or enable it unattended. No
 synthetic prompts should be sent to an owner's Muse conversation for testing.
 
-### Exact-request replies and native options (0.4.1)
+### Exact-request replies and native options (0.4.2)
 
 The optional authenticated USB-host bridge provides `portal.requests.read`,
 `portal.deliver`, and `portal.delivery.status`. These are a separate addressed
@@ -160,11 +160,51 @@ new local text input, never as code, URL, callback or a voice request.
 
 Pending requests expire within two minutes. Clear, backgrounding, reconnect and
 the privacy timer revoke handles. Late ACKs cannot resurrect cleared inputs. Parsing
-is bounded to 64 KiB, text to 16,000 UTF-8 bytes, and options to six bounded labels.
-Unknown content types are explicitly rejected. Final retries must reuse the same
-delivery ID and bytes; changed retries fail. Query `portal.delivery.status` with
+is bounded to 64 KiB for request reads/status and 6 MiB for inline-media deliveries;
+text is limited to 16,000 UTF-8 bytes and options to six bounded labels. Unknown
+content types are explicitly rejected. Final retries must reuse the same delivery
+ID and bytes; changed retries fail. Query `portal.delivery.status` with
 `{"delivery_id":"same-reply-id"}` after a timeout. `rendered` and speech states are
 separate; acceptance is not a claim that a person heard the audio.
+
+### Inline images and exported voice
+
+An addressed delivery can contain one image and one MP3 export alongside text and
+options. Each decoded asset is at most 2 MiB. Content objects have exactly these
+fields (replace the placeholder with canonical base64 of the actual bytes):
+
+```json
+{"type":"image","mime_type":"image/png","data_base64":"..."}
+{"type":"audio","mime_type":"audio/mpeg","data_base64":"..."}
+```
+
+Images accept JPEG, PNG and WebP; declared MIME must match the bytes and the actual
+Android bitmap decoder must succeed. Source dimensions are at most 4096 pixels on
+either edge, downsampled to a 1280-pixel display edge. Decoding happens off the UI
+thread. Clear/background/reconnect and native image-clear commands cancel in-flight
+images without replacing the prior valid screen on a rejected decode.
+
+MP3 bytes are prepared by Android's media decoder entirely in memory. Playback
+requires a duration from 1 ms to three minutes and a still-valid foreground Portal
+voice-input grant. Audio on text, option-tap, photo, mobile or unobserved input is
+rejected. Stop, Clear, PTT, background, reconnect, expiry or another voice response
+cancel playback and release the bytes. Preparing an audio file does not authorize
+playback. Rendered, queued, started, completed, cancelled and failed receipts remain
+distinct. A failed audio export leaves readable text available; it does not silently
+switch providers or replay speech.
+
+The existing Muse composes and exports the image/voice content; the bridge transports
+those exact bytes. No network media fetch, filesystem path, sandbox attachment ID,
+widget token, HTML/script execution, new voice provider, voice cloning or SSML is
+introduced. SHA-256 is computed from received bytes for immutable retry identity;
+callers cannot substitute a hash for the file. This supports an exportable TTS voice,
+not an unverified claim of parity with the mobile app's conversational voice.
+
+Local photo submissions still rely on the native reply-parent route: the addressed
+canonical resolver currently accepts text/voice only. Native phone-thread discovery,
+automatic main-context invocation, owner biometric unlock and arbitrary artifact
+rendering remain separate capabilities. A genuine owner input and existing Muse
+main-context export are required for end-to-end acceptance.
 
 ### Reply-options component
 
@@ -471,7 +511,7 @@ The owner must authorize both agent camera access and app development/deployment
 |---|---|---|
 | `portal.camera` | `{}` | JPEG in `data_base64`; `format: jpeg-base64` |
 | `portal.requests.read` | Exactly one of `exact_text` or `upload_sha256` | One acknowledged canonical Portal input plus reply binding |
-| `portal.deliver` | Versioned bound envelope above | Idempotent render/speech receipt; text/options only |
+| `portal.deliver` | Versioned bound envelope above | Idempotent render/speech receipt; text/options/inline image/exported MP3 |
 | `portal.delivery.status` | `delivery_id` | Separate rendered and speech status, no reply text |
 | `portal.files` | `{}` | Editable source paths |
 | `portal.read` | `path` | UTF-8 source and SHA-256 |
