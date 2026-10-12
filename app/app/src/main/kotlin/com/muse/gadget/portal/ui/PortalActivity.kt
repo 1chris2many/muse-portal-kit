@@ -101,11 +101,13 @@ class PortalActivity: Activity() {
         layout.addView(micState)
         setContentView(layout)
         connection=MuseConnection(store,::status,{text ->runOnUiThread{
-            if(foreground){append("Muse",text);if(!recording)speak(text)}
+            if(foreground)append("Muse",text)
         }},{ready ->runOnUiThread{talk.isEnabled=ready;send.isEnabled=ready}}, {id,text ->runOnUiThread{
             voiceBubbles[id]?.text=text
             android.util.Log.i("MusePortalState","Voice transcript received and displayed.")
-        }}, {done ->runOnUiThread{takePhoto("Muse",done)}})
+        }}, {done ->runOnUiThread{takePhoto("Muse",done)}}, {text ->runOnUiThread{
+            if(foreground&&!recording)speak(text)
+        }})
         localBridge=LocalPortalBridge(this){done ->runOnUiThread{takePhoto("Muse",done)}}
         tts=TextToSpeech(this){result ->runOnUiThread{
             if(result==TextToSpeech.SUCCESS){

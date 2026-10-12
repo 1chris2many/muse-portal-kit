@@ -7,6 +7,7 @@ import com.muse.gadget.noise.*
 import com.muse.gadget.session.ChatStreams
 import com.muse.gadget.session.SubscribeParser
 import com.muse.gadget.session.VoiceTranscripts
+import com.muse.gadget.session.VoiceReplyGate
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -23,7 +24,8 @@ import java.util.concurrent.TimeUnit
 class MuseConnection(private val store: DeviceStore, private val status: (String)->Unit,
     private val reply: (String)->Unit, private val readyChanged: (Boolean)->Unit,
     private val transcript: (String,String)->Unit = {_,_->},
-    private val photo: (((ByteArray?,String?)->Unit)->Unit)? = null) {
+    private val photo: (((ByteArray?,String?)->Unit)->Unit)? = null,
+    private val voiceReply: (String)->Unit = {}) {
     private val http=OkHttpClient.Builder().connectTimeout(15,TimeUnit.SECONDS)
         .readTimeout(30,TimeUnit.SECONDS).pingInterval(20,TimeUnit.SECONDS)
         .followRedirects(false).followSslRedirects(false).build()
@@ -44,6 +46,7 @@ class MuseConnection(private val store: DeviceStore, private val status: (String
     private val voiceSends=mutableMapOf<Long,String>()
     private val ackBodies=mutableMapOf<Long,ByteArray>()
     private val transcripts=VoiceTranscripts()
+    private val voiceReplies=VoiceReplyGate()
     @Volatile private var ready=false
     @Volatile private var closed=false
     private var epoch=0
@@ -74,7 +77,7 @@ class MuseConnection(private val store: DeviceStore, private val status: (String
         ready=false;readyChanged(false)
         val mine=++epoch
         socket?.cancel();transport=null;handshake=null;controlBytes=ByteArray(0);lines=ByteArray(0)
-        sends.clear();voiceSends.clear();ackBodies.clear();parser=newParser()
+        sends.clear();voiceSends.clear();ackBodies.clear();parser=newParser();voiceReplies.reset()
         try {
             val c=store.read("pairing") ?: throw IllegalStateException("Pair this device first.")
             var result=fetch(c)
@@ -164,10 +167,14 @@ class MuseConnection(private val store: DeviceStore, private val status: (String
             if(end) {
                 val root=JSONObject(String(body))
                 val ack=root.optJSONObject("result")?:root
-                android.util.Log.i("MusePortalState","Voice ACK: message ID present=${ack.optString("message_id").isNotBlank()}, parent ID present=${ack.optString("reply_to_message_id").isNotBlank()}")
+                val messageId=(ack.opt("message_id") as? String).orEmpty()
+                val parentId=ack.opt("reply_to_message_id") as? String
+                android.util.Log.i("MusePortalState","Voice ACK: message ID present=${messageId.isNotBlank()}, parent ID present=${!parentId.isNullOrBlank()}")
                 val localId=voiceSends.remove(f.streamId)!!
-                transcripts.acknowledge(localId,ack.optString("message_id"),ack.optString("reply_to_message_id"))
+                transcripts.acknowledge(localId,messageId,parentId)
                     ?.let {transcript(it.first,it.second)}
+                voiceReplies.acknowledge(messageId,parentId)
+                    .forEach { deliverVoiceReply(it.fullText) }
                 ackBodies.remove(f.streamId)
             }
         }
@@ -242,9 +249,14 @@ class MuseConnection(private val store: DeviceStore, private val status: (String
                             android.util.Log.i("MusePortalState","Transcript event: matched device ACK=${match!=null}")
                             match?.let {transcript(it.first,it.second)}
                         }
-                        if(event is SubscribeParser.Event.MessageDone && shown.add(event.id)) {
-                            if(shown.size>500)shown.remove(shown.first())
-                            reply(event.fullText)
+                        if(event is SubscribeParser.Event.MessageDone) {
+                            if(shown.add(event.id)) {
+                                if(shown.size>500)shown.remove(shown.first())
+                                reply(event.fullText)
+                            }
+                            val speak=voiceReplies.receive(event)
+                            android.util.Log.i("MusePortalState","Reply audio gate: parentPresent=${event.replyTo!=null}, authorized=$speak")
+                            if(speak)deliverVoiceReply(event.fullText)
                         }
                     }
                 }
@@ -252,6 +264,10 @@ class MuseConnection(private val store: DeviceStore, private val status: (String
         }
         if(end && f.streamId in listOf(controlId,subscribeId)) fail("Muse stream ended")
         if(end)sends.remove(f.streamId)
+    }
+    private fun deliverVoiceReply(text:String) {
+        android.util.Log.i("MusePortalState","Portal voice reply authorized by matching parent ID.")
+        voiceReply(text)
     }
     fun sendText(text: String) {
         if(!ready){status("Not connected. Nothing sent.");return}

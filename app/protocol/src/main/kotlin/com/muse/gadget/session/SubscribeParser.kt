@@ -11,7 +11,7 @@ import com.muse.gadget.util.strField
  *
  * Rules (mirroring `muse_chat_session.cpp` `on_event`):
  * - lines without `type == "event"` are ignored (e.g. the `ack` line);
- * - only `seq` strictly greater than the last seen seq is processed;
+ * - live deltas require increasing `seq`; persisted rows use message dedup;
  * - `delta.message_start` opens a slot, `delta.text_append` appends,
  *   `delta.message_done` closes it (full text wins over the accumulation);
  * - `display_text_ready == false` defers the done event until a later
@@ -23,7 +23,7 @@ class SubscribeParser(private val diagnostic:(String)->Unit = {}) {
     sealed interface Event {
         data class MessageStart(val id: String) : Event
         data class TextAppend(val id: String, val text: String) : Event
-        data class MessageDone(val id: String, val fullText: String) : Event
+        data class MessageDone(val id: String, val fullText: String, val replyTo: String? = null) : Event
         data class UserTranscript(val id: String, val text: String) : Event
         data class Busy(val busy: Boolean) : Event
     }
@@ -32,10 +32,12 @@ class SubscribeParser(private val diagnostic:(String)->Unit = {}) {
         val id: String,
         val text: StringBuilder = StringBuilder(),
         var pendingDone: String? = null, // display_text_ready=false full text, awaiting confirm
+        var replyTo: String? = null,
     )
 
     private var lastSeq: Long = -1
     private val userTexts = LinkedHashMap<String,String>()
+    private val assistantRows = LinkedHashMap<String, Event.MessageDone>()
     private val slots = LinkedHashMap<String, Slot>()
     private var busy: Boolean = false
 
@@ -53,7 +55,7 @@ class SubscribeParser(private val diagnostic:(String)->Unit = {}) {
         val seq = (root.field("seq") as? JsonValue.Num)?.raw?.toLongOrNull() ?: return emptyList()
         // Persisted user rows have a separate sequence domain from live deltas.
         // Deduplicate these by message ID + text, not the live stream watermark.
-        if (!isUser) {
+        if (!isUser && root.strField("event") != "message.assistant") {
             if (seq <= lastSeq) return emptyList()
             lastSeq = seq
         }
@@ -95,7 +97,7 @@ class SubscribeParser(private val diagnostic:(String)->Unit = {}) {
             val pending = slot.pendingDone
             if (pending != null) {
                 slot.pendingDone = null
-                out.add(Event.MessageDone(slot.id, pending))
+                out.add(Event.MessageDone(slot.id, pending, slot.replyTo))
             }
         }
         return out
@@ -105,12 +107,18 @@ class SubscribeParser(private val diagnostic:(String)->Unit = {}) {
         lastSeq = -1
         slots.clear()
         userTexts.clear()
+        assistantRows.clear()
         busy = false
     }
 
     private fun slotFor(payload: JsonValue.Obj): Slot {
         val id = payload.strField("message_id") ?: payload.strField("id") ?: "msg"
-        return slots.getOrPut(id) { Slot(id) }
+        val slot = slots.getOrPut(id) { Slot(id) }
+        val parent = payload.strField("reply_to_message_id")?.takeIf { it.isNotBlank() }
+            ?: payload.strField("parent_message_id")?.takeIf { it.isNotBlank() }
+        if (parent != null && parent != id) slot.replyTo = parent
+        while (slots.size > 500) slots.remove(slots.keys.first())
+        return slot
     }
 
     private fun onMessageStart(payload: JsonValue.Obj): List<Event> {
@@ -135,7 +143,7 @@ class SubscribeParser(private val diagnostic:(String)->Unit = {}) {
             return emptyList()
         }
         slot.pendingDone = null
-        return listOf(Event.MessageDone(slot.id, full))
+        return listOf(Event.MessageDone(slot.id, full, slot.replyTo))
     }
 
     private fun onWholeMessage(payload: JsonValue.Obj): List<Event> {
@@ -144,7 +152,11 @@ class SubscribeParser(private val diagnostic:(String)->Unit = {}) {
         slot.text.clear()
         slot.text.append(full)
         slot.pendingDone = null
-        return listOf(Event.MessageStart(slot.id), Event.MessageDone(slot.id, full))
+        val done = Event.MessageDone(slot.id, full, slot.replyTo)
+        if (assistantRows[slot.id] == done) return emptyList()
+        assistantRows[slot.id] = done
+        while (assistantRows.size > 500) assistantRows.remove(assistantRows.keys.first())
+        return listOf(Event.MessageStart(slot.id), done)
     }
 
     private fun setBusy(next: Boolean): List<Event> {

@@ -105,6 +105,15 @@ failure with the combined CoreBluetooth name/service advertisement.
 - Voice notes are limited to 15 seconds. Their transcript replaces the pending
   bubble only after the server message ID matches this device's submission ACK.
   Notes from other clients are not used as substitute transcripts.
+- Automatic speech is restricted to replies whose explicit parent ID matches a
+  voice note acknowledged from this Portal. Shared mobile/Home Mini traffic,
+  typed messages, photos, and uncorrelated replies stay silent. Voice eligibility
+  expires after five minutes and is cleared on reconnect; duplicate replies do
+  not replay. Displaying a message alone never authorizes speech.
+- Current live API limitation: observed assistant deltas leave `reply_to_message_id`
+  empty and may set `parent_message_id` to the assistant message itself. These
+  replies remain silent, including genuine voice replies, until an authoritative
+  link is available. No next-message/timing fallback is used.
 - Conversations and recordings are not written to disk; reopening clears the
   visible conversation. Failed sends are not automatically replayed.
 - With Android camera permission granted, **Take & share photo** sends a still
@@ -161,13 +170,11 @@ not an earlier copy of app data. Nothing is automatically published to GitHub.
 
 The separate Android test APK contains `PortalSmokeInstrumentation`; it is not
 included in the production app. With explicit developer authorization,
-`-e camera true` captures one JPEG without storing/sharing it, and `-e voice true`
-sends a generated, clearly labeled synthetic voice fixture from the test assets
-and checks that the server transcription reaches the message view. Generate
-`app/app/build/smoke-assets/transcription-test.wav` as mono 16 kHz PCM before
-building that test APK. The optional `probe` mode sends a labeled integration
-request; use an established authenticated coordination channel instead if the
-Muse cannot authenticate requests arriving through device chat.
+`-e camera true` captures one JPEG without storing/sharing it. The test harness
+never sends chat messages or voice notes. Former `voice`, `audio`, and `probe`
+options are explicitly rejected before starting the app. Transcript and speech
+routing tests use offline JVM fixtures. Coordinate with the Muse through the
+agreed authenticated channel, not synthetic prompts in the main conversation.
 
 ## Security policy — tokens and secrets
 
