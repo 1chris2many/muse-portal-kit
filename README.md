@@ -106,7 +106,7 @@ adb -s YOUR_PORTAL_SERIAL install -r app/build/outputs/apk/debug/app-debug.apk
 
 The root Android plugin is configured even for protocol-only Gradle invocations;
 install the SDK for this build as a whole. Tests themselves run offline on the JVM.
-GitHub Actions builds the app and runs protocol and helper tests without a paired
+GitHub Actions builds the app and runs protocol, offline Android layout, and helper tests without a paired
 device, account token or conversation. A successful CI run does not verify live
 Muse behavior.
 
@@ -118,8 +118,14 @@ contains baseline compatibility fixes and [PR 2](https://github.com/hanfang/muse
 contains the app and development workflow. PR 2 currently includes PR 1's commits.
 
 - App entry point: `app/app/src/main/kotlin/com/muse/gadget/portal/ui/PortalActivity.kt`.
-- Front end: native Kotlin Android Views, including `DeviceStatusView.kt` in the
-  same directory. Design for the app-parity goal above; the legacy screens are
+- Front end: native Kotlin Android Views in `PortalUi.kt` (`PortalDashboard`) and
+  `DeviceStatusView.kt` in the same directory. The Portal home screen is voice-and-touch
+  first; optional local typing is under Settings → Show typing controls. The owner's
+  Portal runs at 1280×800 mdpi, with a measured 1280×740 content area after system UI.
+  `:app:testDebugUnitTest` checks that the voice controls fit that area without a
+  keyboard, plus conservative insets, long status text, and rich-image clearing.
+  These are offline layout tests, not hardware interaction acceptance.
+  Design for the app-parity goal above; the legacy screens are
   not the active client. Keep frontend changes separate from transport changes
   where possible so multiple contributors can work without colliding.
 - Transport: `MuseConnection.kt` in the parent package; protocol and pure tests
