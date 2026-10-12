@@ -106,7 +106,7 @@ adb -s YOUR_PORTAL_SERIAL install -r app/build/outputs/apk/debug/app-debug.apk
 
 The root Android plugin is configured even for protocol-only Gradle invocations;
 install the SDK for this build as a whole. Tests themselves run offline on the JVM.
-GitHub Actions builds the app and runs protocol and helper tests without a paired
+GitHub Actions builds the app and runs protocol, offline Android layout, and helper tests without a paired
 device, account token or conversation. A successful CI run does not verify live
 Muse behavior.
 
@@ -118,8 +118,14 @@ contains baseline compatibility fixes and [PR 2](https://github.com/hanfang/muse
 contains the app and development workflow. PR 2 currently includes PR 1's commits.
 
 - App entry point: `app/app/src/main/kotlin/com/muse/gadget/portal/ui/PortalActivity.kt`.
-- Front end: native Kotlin Android Views, including `DeviceStatusView.kt` in the
-  same directory. Design for the app-parity goal above; the legacy screens are
+- Front end: native Kotlin Android Views in `PortalUi.kt` (`PortalDashboard`) and
+  `DeviceStatusView.kt` in the same directory. The Portal home screen is voice-and-touch
+  first; optional local typing is under Settings → Show typing controls. The owner's
+  Portal runs at 1280×800 mdpi, with a measured 1280×740 content area after system UI.
+  `:app:testDebugUnitTest` checks that the voice controls fit that area without a
+  keyboard, plus conservative insets, long status text, and rich-image clearing.
+  These are offline layout tests, not hardware interaction acceptance.
+  Design for the app-parity goal above; the legacy screens are
   not the active client. Keep frontend changes separate from transport changes
   where possible so multiple contributors can work without colliding.
 - Transport: `MuseConnection.kt` in the parent package; protocol and pure tests
@@ -227,7 +233,15 @@ failure with the combined CoreBluetooth name/service advertisement.
   use the ISO-639-2 language code `eng`; standard Android engines generally use `en`.
 - The app does not send reply text to an additional online TTS service. If there
   is no offline English voice, it displays the limitation rather than silently
-  sending private conversations to another provider.
+  sending private conversations to another provider. The unwired Edge Read Aloud
+  prototype is kept in `legacy/android/tts/`, outside the build.
+- Spoken replies go through `SpeechScript` (`app/protocol`, tested offline):
+  Markdown marks, tables, links, tags and emoji are removed; the reply is split
+  into sentences with short silent pauses between sentences, list items and
+  paragraphs; questions, exclamations and headings get small per-utterance
+  rate and pitch changes. Android `TextToSpeech` is not assumed to read SSML,
+  so no markup of any kind is handed to the engine. Captions still show the
+  reply as Muse sent it. Status changes once per reply, not per sentence.
 - Voice notes are limited to 15 seconds. Their transcript replaces the pending
   bubble only after the server message ID matches this device's submission ACK.
   Notes from other clients are not used as substitute transcripts.
@@ -255,12 +269,60 @@ failure with the combined CoreBluetooth name/service advertisement.
   per-photo confirmation while this app is in the foreground. A visible capture
   indicator and thumbnail show camera activity. The physical privacy switch is
   never bypassed. Grant camera permission only if you want both forms of access.
+- The same Muse can ask the Portal to show one image with `display.draw_url`
+  (see **Rich content from Muse**). Each call needs approval in the Muse app;
+  the image appears as a card in the conversation and clears with it.
 - Camera results are bounded to 128 KiB, retained only in memory, and returned
   over the existing encrypted link. Concurrent captures are rejected; repeated
   request IDs do not take another photo. Camera closes on completion, failure,
   timeout or backgrounding. No general shell or file tools are exposed.
 - This is a foreground prototype. Background wake words, arbitrary remote
   commands, OTA, and automatic startup at boot are not enabled.
+
+## Native Muse voice status
+
+Checked against the official SDK on 2026-10-11 for
+[issue 3](https://github.com/1chris2many/muse-portal-kit/issues/3):
+
+- Muse's own speech endpoint, `GET /api/voice/tts-stream` (older VMs:
+  `/voice/tts-stream`), streams MP3 for a message ID, but only for replies
+  produced with `output_modality: "voice"`. The server stopped serving those
+  turns (every one failed with a canned error), so upstream
+  [PR 12](https://github.com/facebookincubator/muse-gadget-sdk/pull/12) moved
+  gadgets to text replies and removed the fetch.
+  [PR 146](https://github.com/facebookincubator/muse-gadget-sdk/pull/146), which
+  requested voice output again with a device hint, was closed unmerged.
+- [Issue 14](https://github.com/facebookincubator/muse-gadget-sdk/issues/14):
+  the maintainer says a gadget voice pipeline is in progress and recommends a
+  TTS of your choice meanwhile. No SSML, prosody or voice-selection control
+  exists anywhere in the SDK; MP3 is the only speech format it has handled.
+- [PR 139](https://github.com/facebookincubator/muse-gadget-sdk/pull/139) (open)
+  shows the client contract if the endpoint returns: one stream per message ID,
+  a 404 fallback path, cancellation by resetting the stream, bounded buffers.
+- This app therefore keeps the installed on-device voice. Re-check when
+  issue 14 is updated. A native stream would plug into `voiceReply` in
+  `MuseConnection`, still behind `PortalReplyRouter`; nothing else would
+  authorize playback.
+
+## Rich content from Muse
+
+Surveyed against the official SDK on 2026-10-11 for
+[issue 2](https://github.com/1chris2many/muse-portal-kit/issues/2). This is what
+a gadget can receive from Muse today; none of it is Muse mobile-app parity, and
+nothing below imports shared history.
+
+| Path | Status on this Portal |
+|---|---|
+| `display.draw_url` (command Muse invokes with an image URL; the official firmware's name, parameter and result shape) | **Supported, bounded.** https only, public host names only, and the resolver vets every address before the connection uses it: private, loopback, link-local, carrier-grade NAT, multicast, documentation and IPv4-in-IPv6 forms are refused, and a mixed answer is refused whole, for redirect targets too. No cookies or credentials, up to 3 same-scheme redirects, 2 MiB, JPEG/PNG/WebP by magic bytes, source up to 4096 px a side, shown at up to 1280 px, one 30 s budget across redirects and decoding, one at a time, foreground only. Result reports format, size, scale, bytes and time, never the URL. Needs the Muse app's per-call approval and the same runtime invocation support as `camera.capture` (issue 7). |
+| `display.show_animation` (command) | **Supported.** Clears images shown by `display.draw_url`. Images also clear with the Clear button, backgrounding, reconnect and the two-minute privacy timer. Each of those revokes any image still downloading: it is cancelled where possible, rechecked on the UI thread before display, and reported to Muse as `cancelled`, never as shown. |
+| `delta.presentation` on `/chat/subscribe` (images, audio, video, forms attached to a reply; undocumented, shape per [SDK issue 186](https://github.com/facebookincubator/muse-gadget-sdk/issues/186)) | **Announced in words only.** A gadget's token cannot read the files (`path not allowed for device token`), so the Portal shows "Muse sent an image with this reply…" under the same parent-link gate as text, never speaks it, never fetches, and logs the event's field names only. Forms (`data.html`) are never rendered. |
+| Widgets, artifacts, app-style cards | **No API.** The gadget SDK has no such payload; none is claimed or rendered. |
+| Gadget → Muse images | Already supported: **Take & share photo** sends a JPEG item on `/chat/stream`. |
+
+What never happens: no WebView or script execution, no local files, camera or
+host access handed to remote content, no fetch of `sandbox://` paths, no http://
+or private-network fetches on Muse's behalf. Re-check SDK issue 186 for file
+access or inline media and issue 108 for approval-free drawing.
 
 ## Muse development and the command-routing fallback
 

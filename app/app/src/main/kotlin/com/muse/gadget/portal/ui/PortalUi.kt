@@ -80,7 +80,7 @@ class PortalActionButton(
         isClickable = true
         isFocusable = true
         importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
-        minHeight = context.dp(44)
+        minHeight = context.dp(48)
         minWidth = context.dp(48)
         setPadding(context.dp(16), 0, context.dp(16), 0)
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
@@ -276,6 +276,8 @@ class PortalDashboard(context: Context) : FrameLayout(context) {
     private val transcript: LinearLayout
     private val transcriptScroll: ScrollView
     private val emptyState: LinearLayout
+    private val composer: LinearLayout
+    val typingControlsVisible: Boolean get() = composer.visibility == View.VISIBLE
 
     init {
         setBackgroundColor(PortalPalette.BACKGROUND)
@@ -290,14 +292,14 @@ class PortalDashboard(context: Context) : FrameLayout(context) {
         }
         val brand = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
         brand.addView(text("Muse", 29f, PortalPalette.TEXT_PRIMARY, medium = true))
-        brand.addView(text("Portal voice console", 13f, PortalPalette.TEXT_SECONDARY).apply {
+        brand.addView(text("Muse on Portal", 13f, PortalPalette.TEXT_SECONDARY).apply {
             setPadding(0, context.dp(2), 0, 0)
         })
         header.addView(brand, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         statusChip = PortalStatusChip(context)
         header.addView(statusChip)
         settingsButton = PortalActionButton(context, "Settings", PortalActionTone.QUIET)
-        header.addView(settingsButton, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, context.dp(44)).apply {
+        header.addView(settingsButton, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, context.dp(48)).apply {
             leftMargin = context.dp(6)
         })
         content.addView(header)
@@ -322,7 +324,7 @@ class PortalDashboard(context: Context) : FrameLayout(context) {
         })
         privacyCard.addView(privacyCopy, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         clearButton = PortalActionButton(context, "Clear", PortalActionTone.QUIET)
-        privacyCard.addView(clearButton, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, context.dp(44)).apply {
+        privacyCard.addView(clearButton, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, context.dp(48)).apply {
             leftMargin = context.dp(8)
         })
         content.addView(privacyCard, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
@@ -330,7 +332,7 @@ class PortalDashboard(context: Context) : FrameLayout(context) {
         })
 
         deviceStatus = DeviceStatusView(context)
-        content.addView(deviceStatus, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, context.dp(118)).apply {
+        content.addView(deviceStatus, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, context.dp(96)).apply {
             bottomMargin = context.dp(12)
         })
 
@@ -377,7 +379,9 @@ class PortalDashboard(context: Context) : FrameLayout(context) {
             bottomMargin = context.dp(12)
         })
 
-        val composer = LinearLayout(context).apply {
+        composer = LinearLayout(context).apply {
+            // Portal is voice/touch first. Keep optional typing in Settings, off the home screen.
+            visibility = View.GONE
             gravity = Gravity.CENTER_VERTICAL
             setPadding(context.dp(8), context.dp(6), context.dp(6), context.dp(6))
             background = context.portalSurface(PortalPalette.SURFACE_ELEVATED, 18, PortalPalette.BORDER)
@@ -420,6 +424,17 @@ class PortalDashboard(context: Context) : FrameLayout(context) {
         if (!connected) talkButton.setListening(false)
     }
 
+    fun setTypingControlsVisible(visible: Boolean) {
+        composer.visibility = if (visible) View.VISIBLE else View.GONE
+        // Optional typing uses the status illustration's space, not the Talk control's.
+        deviceStatus.visibility = if (visible) View.GONE else View.VISIBLE
+        if (!visible) {
+            messageInput.clearFocus()
+            (context.getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager)
+                .hideSoftInputFromWindow(messageInput.windowToken, 0)
+        }
+    }
+
     fun setAudioState(label: String, detail: String, color: Int = PortalPalette.LILAC) {
         audioTitle.text = label
         audioTitle.setTextColor(color)
@@ -454,7 +469,7 @@ class PortalDashboard(context: Context) : FrameLayout(context) {
         return message
     }
 
-    fun appendPhoto(who: String, bitmap: android.graphics.Bitmap?) {
+    fun appendPhoto(who: String, bitmap: android.graphics.Bitmap?, caption: String? = null, maxHeight: Int = 220) {
         val mine = who == "You"
         val card = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -462,17 +477,19 @@ class PortalDashboard(context: Context) : FrameLayout(context) {
             background = context.portalSurface(if (mine) Color.rgb(25, 69, 76) else PortalPalette.SURFACE_ELEVATED, 18,
                 if (mine) Color.rgb(49, 113, 113) else null)
         }
-        card.addView(text(if (mine) "YOU · PORTAL PHOTO" else "MUSE · PORTAL PHOTO", 11f,
+        card.addView(text(caption ?: if (mine) "YOU · PORTAL PHOTO" else "MUSE · PORTAL PHOTO", 11f,
             if (mine) PortalPalette.ACCENT else PortalPalette.LILAC, medium = true).apply { letterSpacing = 0.08f })
         if (bitmap != null) {
             card.addView(ImageView(context).apply {
                 setImageBitmap(bitmap)
-                scaleType = ImageView.ScaleType.CENTER_CROP
+                scaleType = ImageView.ScaleType.FIT_CENTER
                 adjustViewBounds = true
-                contentDescription = "Portal photo"
+                this.maxHeight = context.dp(maxHeight)
+                tag = "portal-image"
+                contentDescription = caption ?: "Portal photo"
                 background = context.portalSurface(PortalPalette.BACKGROUND, 12)
                 clipToOutline = true
-            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, context.dp(220)).apply {
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
                 topMargin = context.dp(10)
             })
         } else {
@@ -484,6 +501,16 @@ class PortalDashboard(context: Context) : FrameLayout(context) {
     fun clearConversation() {
         transcript.removeAllViews()
         emptyState.visibility = View.VISIBLE
+    }
+
+    /** display.show_animation clears images but preserves message text and captions. */
+    fun clearImages() {
+        for (i in 0 until transcript.childCount) {
+            val card = transcript.getChildAt(i) as? LinearLayout ?: continue
+            for (j in card.childCount - 1 downTo 0) {
+                if (card.getChildAt(j).tag == "portal-image") card.removeViewAt(j)
+            }
+        }
     }
 
     private fun addConversationCard(card: View, mine: Boolean) {
@@ -505,7 +532,7 @@ class PortalDashboard(context: Context) : FrameLayout(context) {
         lower.addView(detail, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
             topMargin = context.dp(4)
         })
-        lower.addView(action, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, context.dp(42)).apply {
+        lower.addView(action, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, context.dp(48)).apply {
             leftMargin = context.dp(4)
             topMargin = context.dp(4)
         })
@@ -517,7 +544,7 @@ class PortalDashboard(context: Context) : FrameLayout(context) {
         gravity = Gravity.CENTER
         setPadding(context.dp(28), context.dp(24), context.dp(28), context.dp(24))
         addView(text("Your Portal session is ready", 18f, PortalPalette.TEXT_PRIMARY, medium = true).apply { gravity = Gravity.CENTER })
-        addView(text("Hold the voice console to speak, or type a message below. Only replies explicitly linked to this Portal appear here.", 14f, PortalPalette.TEXT_SECONDARY).apply {
+        addView(text("Hold to talk to Muse. Replies linked to this Portal appear here.", 14f, PortalPalette.TEXT_SECONDARY).apply {
             gravity = Gravity.CENTER
             setPadding(0, context.dp(8), 0, 0)
             maxLines = 3

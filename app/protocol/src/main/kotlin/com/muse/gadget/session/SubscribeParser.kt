@@ -17,6 +17,8 @@ import com.muse.gadget.util.strField
  * - `display_text_ready == false` defers the done event until a later
  *   `message_done` (or an explicit [settleDeferred]);
  * - `message.assistant` delivers a whole message at once;
+ * - `delta.presentation` (undocumented upstream; shape per SDK issue 186) is
+ *   reported by kind only, since a gadget cannot fetch its files;
  * - `agent.status` / `task.status` drive the busy indicator.
  */
 class SubscribeParser(private val diagnostic:(String)->Unit = {}) {
@@ -25,6 +27,8 @@ class SubscribeParser(private val diagnostic:(String)->Unit = {}) {
         data class TextAppend(val id: String, val text: String) : Event
         data class MessageDone(val id: String, val fullText: String, val replyTo: String? = null) : Event
         data class UserTranscript(val id: String, val text: String) : Event
+        /** Rich content Muse attached to a reply: kinds among image, audio, video, html. */
+        data class Presentation(val id: String, val kinds: List<String>, val replyTo: String? = null) : Event
         data class Busy(val busy: Boolean) : Event
     }
 
@@ -67,6 +71,7 @@ class SubscribeParser(private val diagnostic:(String)->Unit = {}) {
             "delta.text_append" -> onTextAppend(payload)
             "delta.message_done" -> onMessageDone(payload)
             "message.assistant" -> onWholeMessage(payload)
+            "delta.presentation" -> onPresentation(payload)
             "message.user" -> {
                 val id = payload.strField("message_id") ?: payload.strField("id")
                 val text = (payload.strField("display_text") ?: payload.strField("content") ?: payload.strField("text") ?: "")
@@ -163,6 +168,28 @@ class SubscribeParser(private val diagnostic:(String)->Unit = {}) {
         assistantRows[slot.id] = done
         while (assistantRows.size > 500) assistantRows.remove(assistantRows.keys.first())
         return listOf(Event.MessageStart(slot.id), done)
+    }
+
+    private fun onPresentation(payload: JsonValue.Obj): List<Event> {
+        val slot = slotFor(payload)
+        val data = payload.field("data") as? JsonValue.Obj
+        fun present(key: String): Boolean = when (val v = (data ?: payload).field(key)) {
+            null, JsonValue.Null -> false
+            is JsonValue.Arr -> v.items.isNotEmpty()
+            is JsonValue.Str -> v.value.isNotBlank()
+            else -> true
+        }
+        val kinds = ArrayList<String>()
+        if (present("images") || present("image")) kinds += "image"
+        if (present("audio")) kinds += "audio"
+        if (present("videos") || present("video")) kinds += "video"
+        if (present("html") || present("form")) kinds += "html"
+        for (key in listOf("kind", "type", "presentation_type")) {
+            val named = payload.strField(key)?.lowercase()?.takeIf { it.isNotBlank() } ?: continue
+            if (named !in kinds && named != "presentation") kinds += named
+        }
+        diagnostic("Presentation event: kinds=$kinds; parentPresent=${slot.replyTo != null}")
+        return listOf(Event.Presentation(slot.id, kinds, slot.replyTo))
     }
 
     private fun setBusy(next: Boolean): List<Event> {

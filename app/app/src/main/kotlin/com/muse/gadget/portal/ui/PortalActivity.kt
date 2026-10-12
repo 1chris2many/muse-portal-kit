@@ -26,13 +26,16 @@ import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
+import com.muse.gadget.audio.SpeechScript
 import com.muse.gadget.audio.VoiceNoteEncoder
 import com.muse.gadget.audio.isEnglishVoiceLanguage
 import com.muse.gadget.portal.DeviceStore
 import com.muse.gadget.portal.LocalPortalBridge
 import com.muse.gadget.portal.MuseConnection
 import com.muse.gadget.portal.PortalCamera
+import com.muse.gadget.portal.PortalImageFetcher
 import com.muse.gadget.portal.ble.NativePairingPeripheral
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -47,19 +50,31 @@ class PortalActivity : Activity() {
     private var pairing: NativePairingPeripheral? = null
     private var tts: TextToSpeech? = null
     private var offlineSpeech = false
+    private var speechSerial = 0
+    @Volatile private var speechTail: String? = null
     @Volatile private var recording = false
     @Volatile private var recorder: AudioRecord? = null
     @Volatile private var foreground = false
     @Volatile private var cancelled = false
     private var capture: Thread? = null
     private val camera = PortalCamera()
+    private val imageFetcher = PortalImageFetcher()
+    private val displayGuard = com.muse.gadget.display.DisplayGuard()
+    @Volatile private var imageBusy = false
     private var cameraBusy = false
     private var localBridge: LocalPortalBridge? = null
     private val privacyHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val clearVisible = Runnable { clearConversation() }
     private var connected = false
 
+    /** Clearing, leaving or reconnecting revokes images still in flight. */
+    private fun revokeImages() {
+        displayGuard.revoke()
+        imageFetcher.cancel()
+    }
+
     private fun clearConversation() {
+        revokeImages()
         if (::ui.isInitialized) {
             ui.clearConversation()
             ui.messageInput.text.clear()
@@ -91,11 +106,12 @@ class PortalActivity : Activity() {
             ::status,
             { text -> runOnUiThread { if (foreground) appendMessage("Muse", text) } },
             { ready -> runOnUiThread {
+                if (!ready) revokeImages()
                 connected = ready
                 ui.setConnectionState(ready)
                 ui.deviceStatus.show(
                     if (ready) "READY" else "CONNECTING",
-                    if (ready) "Hold to talk or type a message. Your history stays off this screen." else "Opening the secure connection",
+                    if (ready) "Hold to talk. Your history stays off this screen." else "Opening the secure connection",
                 )
             } },
             { id, text -> runOnUiThread {
@@ -104,6 +120,8 @@ class PortalActivity : Activity() {
             } },
             { done -> runOnUiThread { takePhoto("Muse", done) } },
             { text -> runOnUiThread { if (foreground && !recording) speak(text) } },
+            { url, done -> runOnUiThread { showImage(url, done) } },
+            { runOnUiThread { revokeImages(); ui.clearImages() } },
         )
         localBridge = LocalPortalBridge(this) { done -> runOnUiThread { takePhoto("Muse", done) } }
         initializeTextToSpeech()
@@ -203,15 +221,19 @@ class PortalActivity : Activity() {
             }
             tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(id: String?) {
+                    if (id == null || id.endsWith("-pause")) return
                     runOnUiThread {
+                        if (!isCurrentSpeech(id)) return@runOnUiThread
                         ui.setAudioState("SPEAKING", "On-device voice · Tap Stop to interrupt", PortalPalette.LILAC)
                         ui.deviceStatus.show("SPEAKING", "On-device voice · Tap Stop to interrupt")
                     }
-                    android.util.Log.i("MusePortalState", "Speech playback started.")
+                    if (id.endsWith("-0")) android.util.Log.i("MusePortalState", "Speech playback started.")
                 }
 
                 override fun onDone(id: String?) {
                     runOnUiThread {
+                        if (id == null || id != speechTail) return@runOnUiThread
+                        speechTail = null
                         ui.setAudioState("SPEAKER READY", "On-device voice is ready", PortalPalette.LILAC)
                         ui.deviceStatus.show(if (connected) "READY" else "OFFLINE", "Hold to talk")
                     }
@@ -220,6 +242,8 @@ class PortalActivity : Activity() {
 
                 override fun onStop(id: String?, interrupted: Boolean) {
                     runOnUiThread {
+                        if (!isCurrentSpeech(id)) return@runOnUiThread
+                        speechTail = null
                         if (!recording) ui.deviceStatus.show(if (connected) "READY" else "OFFLINE", "Audio stopped")
                     }
                 }
@@ -227,6 +251,8 @@ class PortalActivity : Activity() {
                 @Deprecated("Android legacy callback")
                 override fun onError(id: String?) {
                     runOnUiThread {
+                        if (!isCurrentSpeech(id)) return@runOnUiThread
+                        speechTail = null
                         ui.setAudioState("SPEECH FAILED", "Check audio settings", PortalPalette.DANGER)
                     }
                     android.util.Log.i("MusePortalState", "Speech synthesis failed.")
@@ -327,16 +353,66 @@ class PortalActivity : Activity() {
         ui.appendPhoto(who, bitmap)
     }
 
+    /** Checked on the UI thread so late callbacks cannot reset a newer reply. */
+    private fun isCurrentSpeech(id: String?): Boolean =
+        speechTail != null && id?.startsWith("speech-$speechSerial-") == true
+
+    private fun showImage(url: String, done: (JSONObject?, JSONObject?) -> Unit) {
+        fun error(code: String, message: String) = JSONObject().put("code", code).put("message", message)
+        if (!foreground) { done(null, error("not_foreground", "Open the Portal app before showing an image.")); return }
+        if (imageBusy) { done(null, error("busy", "An image is already being shown; try again in a moment.")); return }
+        imageBusy = true
+        val token = displayGuard.begin()
+        Thread({
+            try {
+                val shown = imageFetcher.fetch(url)
+                runOnUiThread {
+                    imageBusy = false
+                    if (!foreground || !displayGuard.valid(token)) {
+                        shown.bitmap.recycle()
+                        done(null, error("cancelled", "The Portal left the foreground or was cleared before the image arrived; nothing was shown."))
+                        return@runOnUiThread
+                    }
+                    privacyHandler.removeCallbacks(clearVisible)
+                    privacyHandler.postDelayed(clearVisible, 120000)
+                    ui.appendPhoto("Muse", shown.bitmap, "MUSE · IMAGE ${shown.width}×${shown.height}", 520)
+                    android.util.Log.i("MusePortalState", "Image shown; format=${shown.format}; bytes=${shown.bytes}; scale=${shown.scale}")
+                    done(JSONObject().put("format", shown.format).put("width", shown.width).put("height", shown.height)
+                        .put("scale", shown.scale).put("bytes", shown.bytes).put("ms", shown.ms), null)
+                }
+            } catch (e: PortalImageFetcher.Failure) {
+                imageBusy = false
+                done(null, error(e.code, e.message ?: "Image could not be shown."))
+            } catch (_: Exception) {
+                imageBusy = false
+                done(null, error("display_failed", "Image could not be shown."))
+            }
+        }, "portal-image").start()
+    }
+
+    /** Only called for an already-authorized reply or the local speaker test. */
     private fun speak(text: String) {
         if (!offlineSpeech) {
             ui.setAudioState("AUDIO UNAVAILABLE", "No offline English voice found", PortalPalette.DANGER)
             return
         }
-        text.chunked(3500).forEach { part ->
-            if (tts?.speak(part, TextToSpeech.QUEUE_ADD, null, java.util.UUID.randomUUID().toString()) == TextToSpeech.ERROR) {
+        val engine = tts ?: return
+        val script = SpeechScript.plan(text, minOf(SpeechScript.MAX_UTTERANCE_CHARS, TextToSpeech.getMaxSpeechInputLength()))
+        if (script.isEmpty()) return
+        val serial = ++speechSerial
+        speechTail = "speech-$serial-${script.lastIndex}"
+        for ((index, utterance) in script.withIndex()) {
+            val id = "speech-$serial-$index"
+            engine.setSpeechRate(utterance.rate)
+            engine.setPitch(utterance.pitch)
+            if (engine.speak(utterance.text, TextToSpeech.QUEUE_ADD, null, id) == TextToSpeech.ERROR) {
+                speechTail = null
                 ui.setAudioState("SPEECH FAILED", "Check audio settings", PortalPalette.DANGER)
+                return
             }
+            if (utterance.pauseAfterMs > 0) engine.playSilentUtterance(utterance.pauseAfterMs.toLong(), TextToSpeech.QUEUE_ADD, "$id-pause")
         }
+        android.util.Log.i("MusePortalState", "Speech script queued; utterances=${script.size}")
     }
 
     private fun showSettings() {
@@ -379,11 +455,13 @@ class PortalActivity : Activity() {
         option("Reconnect", "Open a fresh secure connection to Muse") { connection.connect() }
         option("Pair device", "Pair this Portal with your existing Muse account") { showPairing() }
         option("Diagnostics", "Show Bluetooth and voice capability status") { diagnostics() }
+        option(if (ui.typingControlsVisible) "Hide typing controls" else "Show typing controls",
+            "Optional local input; voice and touch are the default") { ui.setTypingControlsVisible(!ui.typingControlsVisible) }
         val close = PortalActionButton(this, "Close", PortalActionTone.QUIET).apply { setOnClickListener { dialog.dismiss() } }
-        card.addView(close, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(44)).apply {
+        card.addView(close, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(48)).apply {
             gravity = Gravity.END
         })
-        dialog.setContentView(card)
+        dialog.setContentView(ScrollView(this).apply { addView(card) })
         dialog.show()
         dialog.window?.apply {
             setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
