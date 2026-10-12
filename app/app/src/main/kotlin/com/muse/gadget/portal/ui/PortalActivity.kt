@@ -50,6 +50,8 @@ class PortalActivity: Activity() {
     @Volatile private var cancelled=false
     private var capture: Thread?=null
     private val camera=PortalCamera()
+    private val imageFetcher=PortalImageFetcher()
+    @Volatile private var imageBusy=false
     private lateinit var cameraState:TextView
     private var cameraBusy=false
     private var localBridge:LocalPortalBridge?=null
@@ -129,7 +131,7 @@ class PortalActivity: Activity() {
             android.util.Log.i("MusePortalState","Voice transcript received and displayed.")
         }}, {done ->runOnUiThread{takePhoto("Muse",done)}}, {text ->runOnUiThread{
             if(foreground&&!recording)speak(text)
-        }})
+        }}, {url,done ->showImage(url,done)}, {runOnUiThread{clearImages()}})
         localBridge=LocalPortalBridge(this){done ->runOnUiThread{takePhoto("Muse",done)}}
         tts=TextToSpeech(this){result ->runOnUiThread{
             if(result==TextToSpeech.SUCCESS){
@@ -195,9 +197,7 @@ class PortalActivity: Activity() {
             cameraState.text=if(bytes!=null)"Camera idle · Photo taken by $who" else "Camera idle · ${error?:"Capture failed"}"
             cameraState.setTextColor(Color.rgb(234,240,248))
             if(bytes!=null){
-                append(who,"Portal photo")
-                val bitmap=android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.size)
-                transcript.addView(ImageView(this).apply{setImageBitmap(bitmap);adjustViewBounds=true;maxHeight=300},LinearLayout.LayoutParams(-1,300))
+                appendImage(who,"Portal photo",android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.size),300)
                 android.util.Log.i("MusePortalState","Camera photo captured; bytes=${bytes.size}; initiatedByUser=${who=="You"}")
             }
             done(bytes,error)
@@ -222,6 +222,38 @@ class PortalActivity: Activity() {
         while(transcript.childCount>60)transcript.removeViewAt(0)
         scroll.post{scroll.fullScroll(android.view.View.FOCUS_DOWN)}
         return body
+    }
+    /** An image card: the camera's own photo, or one Muse asked to show. Cleared with the conversation. */
+    private fun appendImage(who:String,caption:String,bitmap:android.graphics.Bitmap?,maxHeight:Int){
+        append(who,caption)
+        if(bitmap==null)return
+        transcript.addView(ImageView(this).apply{setImageBitmap(bitmap);adjustViewBounds=true;this.maxHeight=maxHeight;tag="image"},LinearLayout.LayoutParams(-1,-2).apply{bottomMargin=12})
+        scroll.post{scroll.fullScroll(android.view.View.FOCUS_DOWN)}
+    }
+    /** display.show_animation: drops image cards now; text stays until Clear or the privacy timer. */
+    private fun clearImages(){
+        for(i in transcript.childCount-1 downTo 0)if(transcript.getChildAt(i).tag=="image")transcript.removeViewAt(i)
+    }
+    /** display.draw_url: one policy-checked https image, fetched off the UI thread, shown only in the foreground. */
+    private fun showImage(url:String,done:(JSONObject?,JSONObject?)->Unit){
+        fun error(code:String,message:String)=JSONObject().put("code",code).put("message",message)
+        if(!foreground){done(null,error("not_foreground","Open the Portal app before showing an image."));return}
+        if(imageBusy){done(null,error("busy","An image is already being shown; try again in a moment."));return}
+        imageBusy=true
+        Thread({
+            try{
+                val shown=imageFetcher.fetch(url)
+                runOnUiThread{
+                    imageBusy=false
+                    if(!foreground){shown.bitmap.recycle();done(null,error("not_foreground","The Portal app left the foreground; nothing was shown."));return@runOnUiThread}
+                    appendImage("Muse","Image from Muse · ${shown.width}×${shown.height}",shown.bitmap,520)
+                    android.util.Log.i("MusePortalState","Image shown; format=${shown.format}; bytes=${shown.bytes}; scale=${shown.scale}")
+                    done(JSONObject().put("format",shown.format).put("width",shown.width).put("height",shown.height)
+                        .put("scale",shown.scale).put("bytes",shown.bytes).put("ms",shown.ms),null)
+                }
+            }catch(e:PortalImageFetcher.Failure){imageBusy=false;done(null,error(e.code,e.message?:"Image could not be shown."))}
+            catch(_:Exception){imageBusy=false;done(null,error("display_failed","Image could not be shown."))}
+        },"portal-image").start()
     }
     private fun speak(text:String){
         if(!offlineSpeech){audioState.text="Audio unavailable · No offline English voice found";return}
