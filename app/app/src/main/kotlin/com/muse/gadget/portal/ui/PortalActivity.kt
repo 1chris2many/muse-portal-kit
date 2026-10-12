@@ -3,325 +3,552 @@ package com.muse.gadget.portal.ui
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.Dialog
 import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Color
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.ColorDrawable
 import android.media.AudioAttributes
-import android.media.AudioManager
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.text.InputType
+import android.view.Gravity
+import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.ViewGroup
 import android.view.WindowManager
-import android.widget.*
+import android.view.inputmethod.EditorInfo
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.TextView
 import com.muse.gadget.audio.VoiceNoteEncoder
 import com.muse.gadget.audio.isEnglishVoiceLanguage
-import com.muse.gadget.portal.*
+import com.muse.gadget.portal.DeviceStore
+import com.muse.gadget.portal.LocalPortalBridge
+import com.muse.gadget.portal.MuseConnection
+import com.muse.gadget.portal.PortalCamera
 import com.muse.gadget.portal.ble.NativePairingPeripheral
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.util.Locale
 
 /** Foreground, explicit push-to-talk only. No conversation text is persisted locally. */
-class PortalActivity: Activity() {
+class PortalActivity : Activity() {
     private lateinit var store: DeviceStore
     private lateinit var connection: MuseConnection
-    private lateinit var statusView: TextView
-    private lateinit var transcript: LinearLayout
-    private lateinit var scroll: ScrollView
-    private lateinit var audioState: TextView
-    private lateinit var micState: TextView
-    private val voiceBubbles=LinkedHashMap<String,TextView>()
-    private lateinit var talk: Button
-    private lateinit var send: Button
-    private var pairing: NativePairingPeripheral?=null
-    private var tts: TextToSpeech?=null
-    private var offlineSpeech=false
-    @Volatile private var recording=false
-    @Volatile private var recorder: AudioRecord?=null
-    @Volatile private var foreground=false
-    @Volatile private var cancelled=false
-    private var capture: Thread?=null
-    private val camera=PortalCamera()
-    private lateinit var cameraState:TextView
-    private var cameraBusy=false
-    private var localBridge:LocalPortalBridge?=null
-    private val privacyHandler=android.os.Handler(android.os.Looper.getMainLooper())
-    private val clearVisible=Runnable { clearConversation() }
-    private lateinit var messageInput:EditText
-    private lateinit var deviceStatus:DeviceStatusView
-    private var connected=false
+    private lateinit var ui: PortalDashboard
+    private val voiceBubbles = LinkedHashMap<String, TextView>()
+    private var pairing: NativePairingPeripheral? = null
+    private var tts: TextToSpeech? = null
+    private var offlineSpeech = false
+    @Volatile private var recording = false
+    @Volatile private var recorder: AudioRecord? = null
+    @Volatile private var foreground = false
+    @Volatile private var cancelled = false
+    private var capture: Thread? = null
+    private val camera = PortalCamera()
+    private var cameraBusy = false
+    private var localBridge: LocalPortalBridge? = null
+    private val privacyHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val clearVisible = Runnable { clearConversation() }
+    private var connected = false
 
     private fun clearConversation() {
-        transcript.removeAllViews()
+        if (::ui.isInitialized) {
+            ui.clearConversation()
+            ui.messageInput.text.clear()
+        }
         voiceBubbles.clear()
-        if(::messageInput.isInitialized)messageInput.text.clear()
         tts?.stop()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or WindowManager.LayoutParams.FLAG_SECURE)
-        store=DeviceStore(this)
-        java.io.File(noBackupFilesDir,"identity-public.json").writeText(
-            JSONObject().put("mac",store.mac).put("node_id",store.nodeId).toString())
-        volumeControlStream=AudioManager.STREAM_MUSIC
-        val layout=LinearLayout(this).apply {orientation=LinearLayout.VERTICAL;setPadding(36,24,36,24);setBackgroundColor(Color.rgb(12,17,27))}
-        val header=LinearLayout(this).apply{gravity=android.view.Gravity.CENTER_VERTICAL}
-        val heading=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL}
-        heading.addView(label("Muse",34f).apply{typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)})
-        statusView=label("Connecting…",15f);heading.addView(statusView)
-        header.addView(heading,LinearLayout.LayoutParams(0,-2,1f))
-        header.addView(button("Settings"){showSettings()})
-        layout.addView(header)
-        layout.addView(label("Private history hidden · Only linked Portal replies appear · Clears after 2 minutes",13f)
-            .apply{setTextColor(Color.rgb(153,171,194));setPadding(0,8,0,4)})
-        header.addView(button("Clear"){clearConversation()})
-        header.addView(button("Stop audio"){tts?.stop()})
-        deviceStatus=DeviceStatusView(this)
-        layout.addView(deviceStatus,LinearLayout.LayoutParams(-1,110).apply{topMargin=10;bottomMargin=6})
-        audioState=label("Checking speaker…",13f).apply{setTextColor(Color.rgb(153,171,194));setPadding(0,8,0,12)}
-        layout.addView(audioState)
-        val cameraRow=LinearLayout(this)
-        cameraState=label("Camera idle · Nova can take photos while this app is open",13f)
-        cameraRow.addView(cameraState,LinearLayout.LayoutParams(0,-2,1f))
-        cameraRow.addView(button("Take & share photo"){
-            takePhoto("You"){bytes,error ->if(bytes!=null){connection.sendPhoto(bytes)}else status(error?:"Camera unavailable")}
-        })
-        layout.addView(cameraRow)
-        transcript=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(0,8,0,16)}
-        scroll=ScrollView(this).apply{addView(transcript);isFillViewport=true}
-        layout.addView(scroll,LinearLayout.LayoutParams(-1,0,1f))
-        val inputRow=LinearLayout(this)
-        val input=EditText(this).apply{hint="Or type a message…";textSize=18f;setPadding(20,12,20,12);background=panel(Color.rgb(28,38,54));setTextColor(Color.WHITE);setHintTextColor(Color.LTGRAY);inputType=InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE;maxLines=3}
-        messageInput=input
-        inputRow.addView(input,LinearLayout.LayoutParams(0,-2,1f))
-        send=button("Send"){
-            val text=input.text.toString().trim()
-            if(text.isNotEmpty()){append("You",text);connection.sendText(text);input.text.clear()}
-        }.apply{isEnabled=false}
-        inputRow.addView(send);layout.addView(inputRow)
-        talk=button("Hold to talk"){}.apply{textSize=22f;setTextColor(Color.rgb(12,28,35));background=panel(Color.rgb(118,222,199));isEnabled=false;minimumHeight=72
-            setOnTouchListener{_,event -> when(event.actionMasked){
-                MotionEvent.ACTION_DOWN -> {startRecording();true}
-                MotionEvent.ACTION_UP -> {recording=false;performClick();true}
-                MotionEvent.ACTION_CANCEL -> {cancelled=true;recording=false;true}
-                else -> true
-            }}
-        };layout.addView(talk,LinearLayout.LayoutParams(-1,76).apply{topMargin=14})
-        micState=label("Microphone off · Hold to speak, release to send",13f).apply{gravity=android.view.Gravity.CENTER;setPadding(0,10,0,0);setTextColor(Color.rgb(153,171,194))}
-        layout.addView(micState)
-        setContentView(layout)
-        connection=MuseConnection(store,::status,{text ->runOnUiThread{
-            if(foreground)append("Muse",text)
-        }},{ready ->runOnUiThread{
-            connected=ready;talk.isEnabled=ready;send.isEnabled=ready
-            deviceStatus.show(if(ready)"READY" else "CONNECTING",if(ready)"Hold to talk · Your history stays off this screen" else "Opening the secure connection")
-        }}, {id,text ->runOnUiThread{
-            voiceBubbles[id]?.text=text
-            android.util.Log.i("MusePortalState","Voice transcript received and displayed.")
-        }}, {done ->runOnUiThread{takePhoto("Muse",done)}}, {text ->runOnUiThread{
-            if(foreground&&!recording)speak(text)
-        }})
-        localBridge=LocalPortalBridge(this){done ->runOnUiThread{takePhoto("Muse",done)}}
-        tts=TextToSpeech(this){result ->runOnUiThread{
-            if(result==TextToSpeech.SUCCESS){
-                tts?.setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
-                val voice=tts?.defaultVoice?.takeIf{!it.isNetworkConnectionRequired && isEnglishVoiceLanguage(it.locale.language)}
-                    ?:tts?.voices?.sortedBy{it.name}?.firstOrNull{!it.isNetworkConnectionRequired && isEnglishVoiceLanguage(it.locale.language)}
-                if(voice!=null){tts?.voice=voice;offlineSpeech=true}
-                android.util.Log.i("MusePortalHardware","TTS initialized; voices=${tts?.voices?.size?:0}; offlineEnglish=$offlineSpeech; defaultNetwork=${tts?.defaultVoice?.isNetworkConnectionRequired}; languageResult=${tts?.isLanguageAvailable(Locale.US)}")
-                android.util.Log.i("MusePortalHardware","TTS locale tags: ${tts?.voices?.map{it.locale.toLanguageTag()}?.distinct()?.sorted()}; default=${tts?.defaultVoice?.locale?.toLanguageTag()}")
-            }
-            audioState.text=if(offlineSpeech)"Speaker ready · On-device voice" else "Audio unavailable · No offline English voice found"
-            tts?.setOnUtteranceProgressListener(object:UtteranceProgressListener(){
-                override fun onStart(id:String?){runOnUiThread{audioState.text="Speaking · Tap Stop audio to interrupt";deviceStatus.show("SPEAKING","On-device voice · Tap Stop audio to interrupt")};android.util.Log.i("MusePortalState","Speech playback started.")}
-                override fun onDone(id:String?){runOnUiThread{audioState.text="Speaker ready · On-device voice";deviceStatus.show(if(connected)"READY" else "OFFLINE","Hold to talk")};android.util.Log.i("MusePortalState","Speech playback completed.")}
-                override fun onStop(id:String?,interrupted:Boolean){runOnUiThread{if(!recording)deviceStatus.show(if(connected)"READY" else "OFFLINE","Audio stopped")}}
-                @Deprecated("Android legacy callback") override fun onError(id:String?){runOnUiThread{audioState.text="Speech failed · Check audio settings"};android.util.Log.i("MusePortalState","Speech synthesis failed.")}
-            })
-        }}
+        window.apply {
+            addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or WindowManager.LayoutParams.FLAG_SECURE)
+            statusBarColor = PortalPalette.BACKGROUND
+            navigationBarColor = PortalPalette.BACKGROUND
+            setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        }
+        volumeControlStream = AudioManager.STREAM_MUSIC
+        store = DeviceStore(this)
+        java.io.File(noBackupFilesDir, "identity-public.json").writeText(
+            JSONObject().put("mac", store.mac).put("node_id", store.nodeId).toString(),
+        )
+
+        ui = PortalDashboard(this)
+        setContentView(ui)
+        bindUiActions()
+
+        connection = MuseConnection(
+            store,
+            ::status,
+            { text -> runOnUiThread { if (foreground) appendMessage("Muse", text) } },
+            { ready -> runOnUiThread {
+                connected = ready
+                ui.setConnectionState(ready)
+                ui.deviceStatus.show(
+                    if (ready) "READY" else "CONNECTING",
+                    if (ready) "Hold to talk or type a message. Your history stays off this screen." else "Opening the secure connection",
+                )
+            } },
+            { id, text -> runOnUiThread {
+                voiceBubbles[id]?.text = text
+                android.util.Log.i("MusePortalState", "Voice transcript received and displayed.")
+            } },
+            { done -> runOnUiThread { takePhoto("Muse", done) } },
+            { text -> runOnUiThread { if (foreground && !recording) speak(text) } },
+        )
+        localBridge = LocalPortalBridge(this) { done -> runOnUiThread { takePhoto("Muse", done) } }
+        initializeTextToSpeech()
         diagnostics()
+        importProvisioningIfPresent()
+    }
+
+    private fun bindUiActions() {
+        ui.settingsButton.setOnClickListener { showSettings() }
+        ui.clearButton.setOnClickListener { clearConversation() }
+        ui.stopAudioButton.setOnClickListener {
+            cancelled = true
+            recording = false
+            tts?.stop()
+            ui.setAudioState("AUDIO STOPPED", "Playback stopped", PortalPalette.TEXT_SECONDARY)
+        }
+        ui.cameraButton.setOnClickListener {
+            takePhoto("You") { bytes, error ->
+                if (bytes != null) connection.sendPhoto(bytes) else status(error ?: "Camera unavailable")
+            }
+        }
+        ui.sendButton.setOnClickListener { sendTypedMessage() }
+        ui.messageInput.setOnEditorActionListener { _, actionId, event ->
+            if (actionId == EditorInfo.IME_ACTION_SEND ||
+                (event?.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN)
+            ) {
+                sendTypedMessage()
+                true
+            } else {
+                false
+            }
+        }
+        ui.talkButton.setOnTouchListener { _, event ->
+            if (!ui.talkButton.isEnabled) return@setOnTouchListener true
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    ui.talkButton.setTouchPressed(true)
+                    startRecording()
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    ui.talkButton.setTouchPressed(false)
+                    recording = false
+                    ui.talkButton.performClick()
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    ui.talkButton.setTouchPressed(false)
+                    cancelled = true
+                    recording = false
+                    true
+                }
+                else -> true
+            }
+        }
+    }
+
+    private fun sendTypedMessage() {
+        val text = ui.messageInput.text.toString().trim()
+        if (text.isEmpty()) return
+        appendMessage("You", text)
+        connection.sendText(text)
+        ui.messageInput.text.clear()
+    }
+
+    private fun initializeTextToSpeech() {
+        tts = TextToSpeech(this) { result -> runOnUiThread {
+            if (result == TextToSpeech.SUCCESS) {
+                tts?.setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build(),
+                )
+                val voice = tts?.defaultVoice?.takeIf {
+                    !it.isNetworkConnectionRequired && isEnglishVoiceLanguage(it.locale.language)
+                } ?: tts?.voices?.sortedBy { it.name }?.firstOrNull {
+                    !it.isNetworkConnectionRequired && isEnglishVoiceLanguage(it.locale.language)
+                }
+                if (voice != null) {
+                    tts?.voice = voice
+                    offlineSpeech = true
+                }
+                android.util.Log.i(
+                    "MusePortalHardware",
+                    "TTS initialized; voices=${tts?.voices?.size ?: 0}; offlineEnglish=$offlineSpeech; defaultNetwork=${tts?.defaultVoice?.isNetworkConnectionRequired}; languageResult=${tts?.isLanguageAvailable(Locale.US)}",
+                )
+                android.util.Log.i(
+                    "MusePortalHardware",
+                    "TTS locale tags: ${tts?.voices?.map { it.locale.toLanguageTag() }?.distinct()?.sorted()}; default=${tts?.defaultVoice?.locale?.toLanguageTag()}",
+                )
+            }
+            if (offlineSpeech) {
+                ui.setAudioState("SPEAKER READY", "On-device voice is ready", PortalPalette.LILAC)
+            } else {
+                ui.setAudioState("AUDIO UNAVAILABLE", "No offline English voice found", PortalPalette.DANGER)
+            }
+            tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(id: String?) {
+                    runOnUiThread {
+                        ui.setAudioState("SPEAKING", "On-device voice · Tap Stop to interrupt", PortalPalette.LILAC)
+                        ui.deviceStatus.show("SPEAKING", "On-device voice · Tap Stop to interrupt")
+                    }
+                    android.util.Log.i("MusePortalState", "Speech playback started.")
+                }
+
+                override fun onDone(id: String?) {
+                    runOnUiThread {
+                        ui.setAudioState("SPEAKER READY", "On-device voice is ready", PortalPalette.LILAC)
+                        ui.deviceStatus.show(if (connected) "READY" else "OFFLINE", "Hold to talk")
+                    }
+                    android.util.Log.i("MusePortalState", "Speech playback completed.")
+                }
+
+                override fun onStop(id: String?, interrupted: Boolean) {
+                    runOnUiThread {
+                        if (!recording) ui.deviceStatus.show(if (connected) "READY" else "OFFLINE", "Audio stopped")
+                    }
+                }
+
+                @Deprecated("Android legacy callback")
+                override fun onError(id: String?) {
+                    runOnUiThread {
+                        ui.setAudioState("SPEECH FAILED", "Check audio settings", PortalPalette.DANGER)
+                    }
+                    android.util.Log.i("MusePortalState", "Speech synthesis failed.")
+                }
+            })
+        } }
+    }
+
+    private fun importProvisioningIfPresent() {
         // USB installer may stage a token in this app's private no-backup directory.
         // This is not a network endpoint, exported receiver or credential log.
-        val staged=java.io.File(noBackupFilesDir,"sdk-import")
-        if(staged.isFile){
+        val staged = java.io.File(noBackupFilesDir, "sdk-import")
+        if (staged.isFile) {
             try {
                 require(staged.length() in 12..512)
-                val token=staged.readText().trim()
+                val token = staged.readText().trim()
                 require(token.startsWith("mgst_"))
-                store.save("sdk",JSONObject().put("token",token))
+                store.save("sdk", JSONObject().put("token", token))
                 check(staged.delete())
                 startPairing(token)
-            }catch(_:Exception){staged.delete();status("USB token setup failed; use Pair device.")}
+            } catch (_: Exception) {
+                staged.delete()
+                status("USB token setup failed; use Pair device.")
+            }
         }
-        val pairRequest=java.io.File(noBackupFilesDir,"pair-request")
-        if(pairRequest.isFile && pairRequest.delete())store.read("sdk")?.optString("token")?.let(::startPairing)
-        val imported=java.io.File(noBackupFilesDir,"pairing-import")
-        if(imported.isFile) {
+        val pairRequest = java.io.File(noBackupFilesDir, "pair-request")
+        if (pairRequest.isFile && pairRequest.delete()) store.read("sdk")?.optString("token")?.let(::startPairing)
+        val imported = java.io.File(noBackupFilesDir, "pairing-import")
+        if (imported.isFile) {
             Thread {
                 try {
                     require(imported.length() in 2..16384)
-                    val credentials=JSONObject(imported.readText())
+                    val credentials = JSONObject(imported.readText())
                     connection.validate(credentials)
-                    store.save("pairing",credentials)
+                    store.save("pairing", credentials)
                     check(imported.delete())
                     status("USB-assisted pairing imported securely.")
                     connection.connect()
-                }catch(_:Exception){imported.delete();status("USB-assisted pairing validation failed; no new pairing saved.")}
+                } catch (_: Exception) {
+                    imported.delete()
+                    status("USB-assisted pairing validation failed; no new pairing saved.")
+                }
             }.start()
-        } else if(store.read("pairing")!=null && !staged.exists())connection.connect()
-    }
-    override fun onStart(){super.onStart();foreground=true}
-    private fun takePhoto(who:String,done:(ByteArray?,String?)->Unit) {
-        if(!foreground){done(null,"Open the Portal app before taking a photo.");return}
-        if(cameraBusy){done(null,"Camera is already taking a photo.");return}
-        if(checkSelfPermission(Manifest.permission.CAMERA)!=PackageManager.PERMISSION_GRANTED){
-            requestPermissions(arrayOf(Manifest.permission.CAMERA),11)
-            done(null,"Camera permission is required on the Portal. Retry after granting it.");return
+        } else if (store.read("pairing") != null && !staged.exists()) {
+            connection.connect()
         }
-        cameraState.text="CAMERA ON · $who is taking a photo"
-        cameraState.setTextColor(Color.rgb(255,179,104))
-        cameraBusy=true
-        camera.capture {bytes,error ->
-            cameraBusy=false
-            cameraState.text=if(bytes!=null)"Camera idle · Photo taken by $who" else "Camera idle · ${error?:"Capture failed"}"
-            cameraState.setTextColor(Color.rgb(234,240,248))
-            if(bytes!=null){
-                append(who,"Portal photo")
-                val bitmap=android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.size)
-                transcript.addView(ImageView(this).apply{setImageBitmap(bitmap);adjustViewBounds=true;maxHeight=300},LinearLayout.LayoutParams(-1,300))
-                android.util.Log.i("MusePortalState","Camera photo captured; bytes=${bytes.size}; initiatedByUser=${who=="You"}")
+    }
+
+    override fun onStart() {
+        super.onStart()
+        foreground = true
+    }
+
+    private fun takePhoto(who: String, done: (ByteArray?, String?) -> Unit) {
+        if (!foreground) {
+            done(null, "Open the Portal app before taking a photo.")
+            return
+        }
+        if (cameraBusy) {
+            done(null, "Camera is already taking a photo.")
+            return
+        }
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.CAMERA), 11)
+            done(null, "Camera permission is required on the Portal. Retry after granting it.")
+            return
+        }
+        ui.setCameraState("CAPTURE IN PROGRESS", "$who is taking a photo", PortalPalette.WARNING)
+        cameraBusy = true
+        camera.capture { bytes, error -> runOnUiThread {
+            cameraBusy = false
+            if (bytes != null) {
+                ui.setCameraState("CAMERA READY", "Photo captured by $who", PortalPalette.ACCENT)
+                appendPhoto(who, android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size))
+                android.util.Log.i("MusePortalState", "Camera photo captured; bytes=${bytes.size}; initiatedByUser=${who == "You"}")
+            } else {
+                ui.setCameraState("CAMERA", error ?: "Capture failed", PortalPalette.DANGER)
             }
-            done(bytes,error)
-        }
+            done(bytes, error)
+        } }
     }
-    private fun status(text:String){
+
+    private fun status(text: String) {
         // Status callbacks never contain bearer/SDK tokens or conversation text.
-        android.util.Log.i("MusePortalState",text)
-        runOnUiThread{statusView.text=text}
+        android.util.Log.i("MusePortalState", text)
+        runOnUiThread { ui.connectionDetail.text = text }
     }
-    private fun label(text:String,size:Float)=TextView(this).apply{this.text=text;textSize=size;setTextColor(Color.rgb(234,240,248))}
-    private fun panel(color:Int)=GradientDrawable().apply{setColor(color);cornerRadius=20f}
-    private fun button(text:String, action:()->Unit)=Button(this).apply{this.text=text;isAllCaps=false;textSize=16f;setTextColor(Color.WHITE);setOnClickListener{action()}}
-    private fun append(who:String,text:String):TextView {
+
+    private fun appendMessage(who: String, text: String): TextView {
         privacyHandler.removeCallbacks(clearVisible)
-        privacyHandler.postDelayed(clearVisible,120000)
-        val card=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(22,14,22,18);background=panel(if(who=="You")Color.rgb(26,49,60)else Color.rgb(26,34,48))}
-        card.addView(label(who.uppercase(Locale.ROOT),12f).apply{setTextColor(Color.rgb(125,208,191));letterSpacing=.12f})
-        val body=label(text,21f).apply{setPadding(0,7,0,0);setTextIsSelectable(true);setLineSpacing(3f,1.08f)}
-        card.addView(body)
-        transcript.addView(card,LinearLayout.LayoutParams(-1,-2).apply{bottomMargin=12;if(who=="You")leftMargin=80 else rightMargin=80})
-        while(transcript.childCount>60)transcript.removeViewAt(0)
-        scroll.post{scroll.fullScroll(android.view.View.FOCUS_DOWN)}
-        return body
+        privacyHandler.postDelayed(clearVisible, 120000)
+        return ui.appendMessage(who, text)
     }
-    private fun speak(text:String){
-        if(!offlineSpeech){audioState.text="Audio unavailable · No offline English voice found";return}
-        text.chunked(3500).forEach {part ->
-            if(tts?.speak(part,TextToSpeech.QUEUE_ADD,null,java.util.UUID.randomUUID().toString())==TextToSpeech.ERROR)
-                audioState.text="Speech could not start · Check audio settings"
+
+    private fun appendPhoto(who: String, bitmap: android.graphics.Bitmap?) {
+        privacyHandler.removeCallbacks(clearVisible)
+        privacyHandler.postDelayed(clearVisible, 120000)
+        ui.appendPhoto(who, bitmap)
+    }
+
+    private fun speak(text: String) {
+        if (!offlineSpeech) {
+            ui.setAudioState("AUDIO UNAVAILABLE", "No offline English voice found", PortalPalette.DANGER)
+            return
+        }
+        text.chunked(3500).forEach { part ->
+            if (tts?.speak(part, TextToSpeech.QUEUE_ADD, null, java.util.UUID.randomUUID().toString()) == TextToSpeech.ERROR) {
+                ui.setAudioState("SPEECH FAILED", "Check audio settings", PortalPalette.DANGER)
+            }
         }
     }
-    private fun showSettings(){
-        AlertDialog.Builder(this).setTitle("Portal settings").setItems(arrayOf("Test speaker","Stop audio","Reconnect","Pair device","Diagnostics")){_,which ->when(which){
-            0->speak("Your Portal speaker is ready.")
-            1->{cancelled=true;recording=false;tts?.stop()}
-            2->connection.connect()
-            3->showPairing()
-            4->diagnostics()
-        }}.setNegativeButton("Close",null).show()
+
+    private fun showSettings() {
+        val dialog = Dialog(this)
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(22), dp(22), dp(16))
+            background = portalSurface(PortalPalette.SURFACE_ELEVATED, 24, PortalPalette.BORDER)
+        }
+        card.addView(dialogText("Portal settings", 24f, PortalPalette.TEXT_PRIMARY, true))
+        card.addView(dialogText("Device controls stay local to this Portal.", 14f, PortalPalette.TEXT_SECONDARY).apply {
+            setPadding(0, dp(5), 0, dp(14))
+        })
+        fun option(title: String, detail: String, action: () -> Unit) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                minimumHeight = dp(64)
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(14), dp(11), dp(14), dp(11))
+                background = portalSurface(PortalPalette.SURFACE, 16, PortalPalette.BORDER)
+                isClickable = true
+                isFocusable = true
+                setOnClickListener {
+                    dialog.dismiss()
+                    action()
+                }
+            }
+            row.addView(dialogText(title, 16f, PortalPalette.TEXT_PRIMARY, true))
+            row.addView(dialogText(detail, 13f, PortalPalette.TEXT_SECONDARY).apply { setPadding(0, dp(3), 0, 0) })
+            card.addView(row, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                bottomMargin = dp(8)
+            })
+        }
+        option("Test speaker", "Play a short sentence using the on-device voice") { speak("Your Portal speaker is ready.") }
+        option("Stop audio", "Interrupt any voice playback") {
+            cancelled = true
+            recording = false
+            tts?.stop()
+        }
+        option("Reconnect", "Open a fresh secure connection to Muse") { connection.connect() }
+        option("Pair device", "Pair this Portal with your existing Muse account") { showPairing() }
+        option("Diagnostics", "Show Bluetooth and voice capability status") { diagnostics() }
+        val close = PortalActionButton(this, "Close", PortalActionTone.QUIET).apply { setOnClickListener { dialog.dismiss() } }
+        card.addView(close, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(44)).apply {
+            gravity = Gravity.END
+        })
+        dialog.setContentView(card)
+        dialog.show()
+        dialog.window?.apply {
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
     }
-    private fun diagnostics(){
-        val adapter=(getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
-        val line="Android ${android.os.Build.VERSION.RELEASE} · Bluetooth ${adapter?.isEnabled} · BLE advertising ${adapter?.isMultipleAdvertisementSupported} · offline voice $offlineSpeech"
+
+    private fun dialogText(value: String, sizeSp: Float, color: Int, medium: Boolean = false): TextView = TextView(this).apply {
+        text = value
+        setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, sizeSp)
+        setTextColor(color)
+        typeface = android.graphics.Typeface.create(if (medium) "sans-serif-medium" else "sans-serif", android.graphics.Typeface.NORMAL)
+    }
+
+    private fun diagnostics() {
+        val adapter = (getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
+        val line = "Android ${android.os.Build.VERSION.RELEASE} · Bluetooth ${adapter?.isEnabled} · BLE advertising ${adapter?.isMultipleAdvertisementSupported} · offline voice $offlineSpeech"
         status(line)
         // Only hardware capability metadata; never token, transcript, identity or account data.
-        android.util.Log.i("MusePortalHardware",line)
+        android.util.Log.i("MusePortalHardware", line)
     }
-    private fun showPairing(){
-        val saved=store.read("sdk")?.optString("token")
-        if(!saved.isNullOrBlank()) {startPairing(saved);return}
-        val field=EditText(this).apply{hint="Muse SDK token (mgst_…)";inputType=InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-            importantForAutofill=android.view.View.IMPORTANT_FOR_AUTOFILL_NO
+
+    private fun showPairing() {
+        val saved = store.read("sdk")?.optString("token")
+        if (!saved.isNullOrBlank()) {
+            startPairing(saved)
+            return
         }
-        AlertDialog.Builder(this).setTitle("Pair with your Muse account")
+        val field = EditText(this).apply {
+            hint = "Muse SDK token (mgst_…)"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            importantForAutofill = android.view.View.IMPORTANT_FOR_AUTOFILL_NO
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Pair with your Muse account")
             .setMessage("Enter the SDK token from gadgets.muse.ai. It stays encrypted on this Portal. Then pair in the Muse phone app. Pairing closes in 10 minutes.")
-            .setView(field).setNegativeButton("Cancel",null).setPositiveButton("Start pairing"){_,_ ->
-                val token=field.text.toString().trim();field.text.clear()
-                if(!token.startsWith("mgst_")||token.length<12){status("Enter a valid Muse SDK token.");return@setPositiveButton}
+            .setView(field)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Start pairing") { _, _ ->
+                val token = field.text.toString().trim()
+                field.text.clear()
+                if (!token.startsWith("mgst_") || token.length < 12) {
+                    status("Enter a valid Muse SDK token.")
+                    return@setPositiveButton
+                }
                 startPairing(token)
-            }.show()
+            }
+            .show()
     }
-    private fun startPairing(token:String){
-        if(android.os.Build.VERSION.SDK_INT>=31 && listOf(Manifest.permission.BLUETOOTH_CONNECT,Manifest.permission.BLUETOOTH_ADVERTISE)
-                .any{checkSelfPermission(it)!=PackageManager.PERMISSION_GRANTED}) {
-            requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_CONNECT,Manifest.permission.BLUETOOTH_ADVERTISE),12)
+
+    private fun startPairing(token: String) {
+        if (android.os.Build.VERSION.SDK_INT >= 31 && listOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_ADVERTISE)
+                .any { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_ADVERTISE), 12)
             status("Grant Bluetooth permission, then choose Pair device again.")
             return
         }
-        try{
+        try {
             pairing?.stop()
-            store.save("sdk",JSONObject().put("token",token))
-            pairing=NativePairingPeripheral(this,store,token,connection::validate,::status,{connection.connect()})
+            store.save("sdk", JSONObject().put("token", token))
+            pairing = NativePairingPeripheral(this, store, token, connection::validate, ::status) { connection.connect() }
             pairing!!.start()
-        }catch(e:Exception){pairing?.stop();pairing=null;status("Pairing unavailable: "+(e.message?:e.javaClass.simpleName))}
-    }
-    private fun startRecording(){
-        if(capture?.isAlive==true)return
-        if(checkSelfPermission(Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED){
-            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO),10);return
+        } catch (e: Exception) {
+            pairing?.stop()
+            pairing = null
+            status("Pairing unavailable: ${e.message ?: e.javaClass.simpleName}")
         }
-        tts?.stop();cancelled=false;recording=true;talk.text="Listening… release to send"
-        deviceStatus.show("LISTENING","Release to send · Maximum 15 seconds")
-        micState.text="Microphone on · Up to 15 seconds"
-        capture=Thread{
-            var local:AudioRecord?=null
-            try{
-                val minimum=AudioRecord.getMinBufferSize(16000,AudioFormat.CHANNEL_IN_MONO,AudioFormat.ENCODING_PCM_16BIT)
-                require(minimum>0)
-                local=AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION,16000,AudioFormat.CHANNEL_IN_MONO,AudioFormat.ENCODING_PCM_16BIT,maxOf(minimum,4096))
-                check(local.state==AudioRecord.STATE_INITIALIZED)
-                recorder=local;local.startRecording()
-                val pcm=ByteArrayOutputStream();val block=ByteArray(2048)
-                while(recording&&foreground&&pcm.size()<480000){
-                    val n=local.read(block,0,minOf(block.size,480000-pcm.size()))
-                    check(n>=0);if(n>0)pcm.write(block,0,n)
-                    var peak=0
-                    for(i in 0 until n-1 step 2) {
-                        val sample=((block[i].toInt() and 255) or (block[i+1].toInt() shl 8)).toShort().toInt()
-                        peak=maxOf(peak,kotlin.math.abs(sample))
-                    }
-                    val level=peak/32768f;val progress=pcm.size()/480000f
-                    runOnUiThread{if(recording)deviceStatus.show("LISTENING","Release to send · Maximum 15 seconds",level,progress)}
-                }
-                if(!cancelled&&foreground&&pcm.size()>=1600){
-                    val data=pcm.toByteArray();val header=VoiceNoteEncoder.wavHeader()
-                    java.nio.ByteBuffer.wrap(header).order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(4,data.size+36).putInt(40,data.size)
-                    val id=java.util.UUID.randomUUID().toString()
-                    runOnUiThread{
-                        voiceBubbles[id]=append("You","Transcribing your voice note…")
-                        while(voiceBubbles.size>50)voiceBubbles.remove(voiceBubbles.keys.first())
-                        connection.sendVoice(header+data,id)
-                        deviceStatus.show("SENT","Waiting for a reply linked to this Portal")
-                        scroll.postDelayed({
-                            voiceBubbles[id]?.takeIf{it.text.toString()=="Transcribing your voice note…"}
-                                ?.text="No transcript received yet. Check the connection status."
-                        },45000)
-                    }
-                }
-            }catch(_:Exception){status("Microphone capture failed; no recording sent.")}
-            finally{recording=false;try{local?.stop()}catch(_:Exception){};local?.release();recorder=null
-                runOnUiThread{talk.text="Hold to talk";micState.text="Microphone off · Hold to speak, release to send"}}
-        }.also{it.start()}
     }
-    override fun onStop(){foreground=false;cancelled=true;recording=false;camera.cancel();privacyHandler.removeCallbacks(clearVisible);clearConversation();super.onStop()}
-    override fun onDestroy(){localBridge?.close();pairing?.stop();connection.close();tts?.shutdown();super.onDestroy()}
+
+    private fun startRecording() {
+        if (capture?.isAlive == true) return
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 10)
+            return
+        }
+        tts?.stop()
+        cancelled = false
+        recording = true
+        ui.talkButton.setListening(true)
+        ui.deviceStatus.show("LISTENING", "Release to send · Maximum 15 seconds")
+        ui.micState.text = "Microphone on · Release to send · Maximum 15 seconds"
+        capture = Thread {
+            var local: AudioRecord? = null
+            try {
+                val minimum = AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+                require(minimum > 0)
+                local = AudioRecord(
+                    MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                    16000,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    maxOf(minimum, 4096),
+                )
+                check(local.state == AudioRecord.STATE_INITIALIZED)
+                recorder = local
+                local.startRecording()
+                val pcm = ByteArrayOutputStream()
+                val block = ByteArray(2048)
+                while (recording && foreground && pcm.size() < 480000) {
+                    val count = local.read(block, 0, minOf(block.size, 480000 - pcm.size()))
+                    check(count >= 0)
+                    if (count > 0) pcm.write(block, 0, count)
+                    var peak = 0
+                    for (index in 0 until count - 1 step 2) {
+                        val sample = ((block[index].toInt() and 255) or (block[index + 1].toInt() shl 8)).toShort().toInt()
+                        peak = maxOf(peak, kotlin.math.abs(sample))
+                    }
+                    val level = peak / 32768f
+                    val progress = pcm.size() / 480000f
+                    runOnUiThread {
+                        if (recording) ui.deviceStatus.show("LISTENING", "Release to send · Maximum 15 seconds", level, progress)
+                    }
+                }
+                if (!cancelled && foreground && pcm.size() >= 1600) {
+                    val data = pcm.toByteArray()
+                    val header = VoiceNoteEncoder.wavHeader()
+                    java.nio.ByteBuffer.wrap(header).order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(4, data.size + 36).putInt(40, data.size)
+                    val id = java.util.UUID.randomUUID().toString()
+                    runOnUiThread {
+                        voiceBubbles[id] = appendMessage("You", "Transcribing your voice note…")
+                        while (voiceBubbles.size > 50) voiceBubbles.remove(voiceBubbles.keys.first())
+                        connection.sendVoice(header + data, id)
+                        ui.deviceStatus.show("SENT", "Waiting for a reply linked to this Portal")
+                        ui.micState.text = "Voice note sent · Waiting for a linked reply"
+                        ui.talkButton.setListening(false)
+                        ui.micState.postDelayed({
+                            voiceBubbles[id]?.takeIf { it.text.toString() == "Transcribing your voice note…" }
+                                ?.text = "No transcript received yet. Check the connection status."
+                        }, 45000)
+                    }
+                }
+            } catch (_: Exception) {
+                status("Microphone capture failed; no recording sent.")
+            } finally {
+                recording = false
+                try {
+                    local?.stop()
+                } catch (_: Exception) {
+                }
+                local?.release()
+                recorder = null
+                runOnUiThread {
+                    ui.talkButton.setListening(false)
+                    ui.micState.text = "Microphone off · Hold to speak, then release to send"
+                }
+            }
+        }.also { it.start() }
+    }
+
+    override fun onStop() {
+        foreground = false
+        cancelled = true
+        recording = false
+        camera.cancel()
+        privacyHandler.removeCallbacks(clearVisible)
+        clearConversation()
+        super.onStop()
+    }
+
+    override fun onDestroy() {
+        localBridge?.close()
+        pairing?.stop()
+        connection.close()
+        tts?.shutdown()
+        super.onDestroy()
+    }
 }
