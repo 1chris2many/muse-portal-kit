@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "status": "awaiting_existing_muse_capability_review",
+  "status": "runtime_review_complete_live_export_verification_separate",
   "scope": "Android Muse features relevant to the Portal backlog; not a parity promise",
   "evidence_rules": {
     "runtime_reported": "The existing Muse reports access; delivery/export still needs verification",
@@ -9,21 +9,26 @@
     "unknown": "Asked, not established; do not claim this is available or unavailable"
   },
   "features": [
-    {"id":"generated-images","existing_issue":2,"runtime":"unknown","android_client":"unknown","export":"unknown","portal":"not_implemented","source_evidence":"Official ESP32 display.draw_url displays baseline JPEG or raw RGB565; not yet an Android renderer or a verified runtime invocation path."},
-    {"id":"photos-and-image-attachments","existing_issue":2,"runtime":"unknown","android_client":"unknown","export":"unknown","portal":"local_camera_capture_and_preview_exist_not_remote_image_display"},
-    {"id":"documents-and-file-downloads","existing_issue":2,"runtime":"unknown","android_client":"unknown","export":"unknown","portal":"not_implemented"},
-    {"id":"html-artifacts-and-apps","existing_issue":2,"runtime":"unknown","android_client":"unknown","export":"unknown","portal":"not_implemented","design_constraint":"An isolated viewer is required; no privileged JavaScript bridge or arbitrary local-file access."},
-    {"id":"widgets-and-action-callbacks","existing_issue":2,"runtime":"unknown","android_client":"unknown","export":"unknown","portal":"not_implemented","design_constraint":"User actions must bind to fixed server-side actions; do not accept arbitrary executable callbacks."},
-    {"id":"live-updates-and-progress","existing_issue":2,"runtime":"unknown","android_client":"unknown","export":"unknown","portal":"shared_busy_events_parsed_no_targeted_rich_update_renderer"},
-    {"id":"native-voice-and-audio","existing_issue":3,"runtime":"unknown","android_client":"unknown","export":"unknown","portal":"local_android_tts_only","source_evidence":"Official ESP32 chat session uses a developer-supplied TTS hook; native Muse audio export remains unverified."},
-    {"id":"ssml-and-speech-controls","existing_issue":3,"runtime":"unknown","android_client":"unknown","export":"unknown","portal":"no_verified_native_muse_ssml_contract"},
-    {"id":"video","existing_issue":2,"runtime":"unknown","android_client":"unknown","export":"unknown","portal":"not_implemented"},
-    {"id":"main-conversation-and-threads","existing_issue":5,"runtime":"unknown","android_client":"unknown","export":"unknown","portal":"current_main_conversation_only","source_evidence":"Kotlin text request builder accepts session_id, but app does not yet select or subscribe to a chosen thread."},
-    {"id":"notifications-and-proactive-cards","existing_issue":2,"runtime":"unknown","android_client":"unknown","export":"unknown","portal":"not_implemented","design_constraint":"Separate opt-in visual route; never grants audio permission or imports private history."},
+    {"id":"generated-images","existing_issue":2,"runtime":"reported_available_in_media_tool_schema_not_exercised_in_review","android_client":"image_attachments_reported_used","export":"runtime_reports_readable_file_bytes_not_fetchable_sandbox_URL","portal":"not_implemented","source_evidence":"Official ESP32 display.draw_url displays baseline JPEG or raw RGB565; not yet an Android renderer or a verified runtime invocation path."},
+    {"id":"photos-and-image-attachments","existing_issue":2,"runtime":"reported_used","android_client":"reported_file_and_image_attachments","export":"runtime_reports_readable_file_bytes","portal":"local_camera_capture_and_preview_exist_not_remote_image_display"},
+    {"id":"documents-and-file-downloads","existing_issue":2,"runtime":"reported_available_documents_decks_spreadsheets","android_client":"delivered_by_link","export":"link_reported_auth_and_format_pending","portal":"not_implemented"},
+    {"id":"html-artifacts-and-apps","existing_issue":2,"runtime":"artifact_namespace_available","android_client":"delivered_by_link_or_attachment","export":"hosted_artifact_private_fetch_unverified_treat_as_client_session_dependent","portal":"not_implemented","design_constraint":"An isolated viewer is required; no privileged JavaScript bridge or arbitrary local-file access."},
+    {"id":"widgets-and-action-callbacks","existing_issue":2,"runtime":"widget.create_html_widget_create_map_widget_create_list_widget_and_widget.present_reported","android_client":"client_side_rendering_and_interactivity","export":"authored_HTML_list_items_map_pins_exportable_no_callback_export_observed","portal":"not_implemented","design_constraint":"User actions must bind to fixed server-side actions; do not accept arbitrary executable callbacks."},
+    {"id":"reply-options","existing_issue":2,"runtime":"muse.create_options_options_and_button_style_reported_used","android_client":"embed_token_renders_options_tap_sends_exact_option_text_as_next_user_message","export":"plain_option_labels_exportable_not_client_widget_token_interactivity","portal":"not_implemented"},
+    {"id":"message-reactions","existing_issue":2,"runtime":"reported_used","android_client":"reactions_on_user_messages","export":"unknown","portal":"not_implemented"},
+    {"id":"live-updates-and-progress","existing_issue":2,"runtime":"followup_bubbles_and_scheduled_job_messages_reported_used","android_client":"conversation_bubbles_not_arbitrary_app_chrome_control","export":"no_targeted_update_schema_verified","portal":"shared_busy_events_parsed_no_targeted_rich_update_renderer"},
+    {"id":"native-voice-and-audio","existing_issue":3,"runtime":"tts_skill_MP3_file_reported_generated_and_sent_today","android_client":"audio_file_attachment_reported_used","export":"runtime_reports_MP3_bytes_readable_and_POSTable_selectable_skill_voices_no_single_canonical_Muse_voice_claim","portal":"local_android_tts_only","source_evidence":"Runtime reports a TTS media path, distinct from the SDK speech hook. This does not prove export of the exact Muse conversational voice."},
+    {"id":"ssml-and-speech-controls","existing_issue":3,"runtime":"reported_unavailable_TTS_accepts_plain_text","android_client":"not_an_SSML_control_surface","export":"no_SSML_or_prosody_markup_reported","portal":"no_verified_native_muse_ssml_contract"},
+    {"id":"video","existing_issue":2,"runtime":"reported_available_in_media_tool_schema_not_exercised","android_client":"unknown","export":"unknown","portal":"not_implemented"},
+    {"id":"main-conversation-and-threads","existing_issue":5,"runtime":"main_and_side_chat_text_reported_used_daily","android_client":"main_and_side_chats","export":"thread_identifiers_and_targeting_contract_pending","portal":"current_main_conversation_only","source_evidence":"Kotlin text request builder accepts session_id, but app does not yet select or subscribe to a chosen thread."},
+    {"id":"notifications-and-proactive-cards","existing_issue":2,"runtime":"no_notification_API_reported_scheduled_jobs_only","android_client":"scheduled_messages_in_main_chat","export":"no_portal_display_action_today","portal":"not_implemented","design_constraint":"Separate opt-in visual route; never grants audio permission or imports private history."},
+    {"id":"app-chrome-and-settings","existing_issue":2,"runtime":"reported_no_control","android_client":"native_app_owned","export":"not_available_as_runtime_control","portal":"build_native_portal_controls_instead_of_promising_remote_android_app_control"},
     {"id":"wake-word","existing_issue":1,"runtime":"unknown","android_client":"unknown","export":"not_applicable","portal":"push_to_talk_only"},
     {"id":"owner-recognition","existing_issue":4,"runtime":"unknown","android_client":"unknown","export":"unknown","portal":"not_implemented","design_constraint":"A Portal microphone event does not identify the speaker; do not silently collect biometric samples."},
     {"id":"gadget-native-commands","existing_issue":7,"runtime":"reported_unavailable_in_existing_context","android_client":"not_the_same_as_runtime_tool_access","export":"authenticated_scoped_host_bridge_available","portal":"camera_capture_registered_with_working_usb_fallback"}
   ],
+  "source_note": "Existing Muse runtime capability report received October 11, 2026. Self-reported use is explicitly distinguished from an independently verified Portal delivery.",
+  "proposed_order": ["addressed_text_and_voice_request_binding", "exportable_images_TTS_audio_and_reply_options", "documents_and_artifacts_then_widgets_with_verified_callbacks", "video_reactions_and_targeted_live_updates"],
   "required_response_fields": ["feature", "user_visible_behavior", "tool_or_action", "payload_representation", "export_method", "callbacks_or_updates", "authentication_or_expiry", "limits", "evidence_strength"],
   "implementation_policy": "This inventory scopes backlog items. It does not activate microphones, biometrics, new providers, permissions, rendering, or a replacement Muse."
 }

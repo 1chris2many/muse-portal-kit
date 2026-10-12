@@ -22,6 +22,8 @@ jobs:
       - run: ./gradlew :protocol:test :app:lintDebug :app:assembleDebug --no-daemon --console=plain
         working-directory: app
       - run: python3 -m unittest discover -s tools -p 'test_portal_dev.py'
+      - name: Offline addressed delivery contract
+        run: python3 -m unittest discover -s design -p 'test_*.py'
   mac-pairing-helper:
     runs-on: macos-latest
     steps:

@@ -14,7 +14,8 @@ usable link to those inputs. `PortalReplyRouter` therefore hides unlinked events
 `LocalPortalBridge` currently exposes status and camera only. No delivery action
 or rich-content receiver exists in the running bridge.
 
-The official ESP32 SDK advertises `display.draw_url` for images. Android can
+The [official ESP32 SDK](https://github.com/facebookincubator/muse-gadget-sdk/blob/main/esp32/main/noise_control.cpp)
+advertises `display.draw_url` for images. Android can
 implement that pattern, but native command invocation must also be accessible to
 the existing Muse runtime. It is not a widget or artifact export API.
 
@@ -91,7 +92,9 @@ Reject a delivery during recording rather than queuing surprise playback later.
 
 | Option | Decision condition | Current status |
 | --- | --- | --- |
-| Native input metadata | Muse sees the same native input ID and device source and carries them into the delivery tool | Asked the existing Muse; not verified |
+| Native input metadata | Muse sees the same native input ID and device source and carries them into the delivery tool | Device ID reported visible; native input ID reported absent |
+| Exact uploaded file | Muse hashes the original uploaded voice file; device plus digest resolves exactly one live local request | Primary candidate; runtime confirms file hashing, offline model passes, pipeline byte preservation unverified |
+| Unique upload filename | The real voice-note filename carries a local random handle preserved in the runtime's trusted uploaded-file metadata | Pipeline filename preservation unverified; no live experiment performed |
 | Canonical request tool result | Muse reads the exact input plus Portal handle and deliberately answers that input through the delivery tool | Proposed fallback; no endpoint or runtime handoff yet |
 | Shared stream timing | Pick the first answer after a voice note or match nearby timestamps | Rejected because concurrent devices share the stream |
 | New Muse instance or silent thread switch | Create a substitute identity or move the conversation without the owner choosing it | Excluded |
@@ -101,6 +104,43 @@ It cannot be enabled merely by exposing a bag of pending IDs. The actual input
 must accompany each handle and be the input Muse is answering. If native metadata
 does not expose the handle, establish a supported handoff into the existing Muse
 context; do not silently create a second composer or a competing polling job.
+
+The existing Muse reports seeing the input device ID and a renamed uploaded WAV
+path, but no native input UUID. That makes an exact-file binding worth testing:
+hash the WAV before the Portal uploads it, then hash that same uploaded file in
+Muse's runtime. Resolve only an exact match for the same device and conversation
+with a live native ACK. Resampling, re-encoding, no match, multiple identical
+pending uploads, expiry or missing source metadata all reject. Do not infer a
+match from an upload counter, file timestamps or approximate audio similarity.
+The resolver returns the original input ID and local handle, not a list to guess
+from. Hashes and upload paths are private request metadata, not log fields.
+
+The existing Muse reviewed this design and reports that its Linux runtime can
+read and SHA-256 hash the uploaded file. The selected prototype is exact-file
+lookup, with a filename handle optional only after preservation is verified.
+The receiver's device identity and the runtime envelope identity must match
+exactly, or have an authenticated pairing-derived mapping; no prefix guessing.
+`conversation_id` is a configured binding to the existing main context until a
+real thread-selection contract exists. It is not a fabricated native session ID.
+
+This candidate restores the voice path only. Typed text requires its own canonical
+input lookup or an exposed native message ID. The lookup must include the actual
+text being answered and the one-time handle together, and be invoked as an
+explicit request-response workflow. A file hash must never authorize a text,
+photo, or widget reply. Existing direct text traffic retains its current origin
+gate until that separate path is verified.
+
+This is a candidate, not a tested end-to-end route. Tool results carrying a
+handle must stay in the existing Muse context and must not become fake user
+messages. A runtime report that device IDs are visible does not establish that
+those IDs reach the response stream or that the upload pipeline preserves bytes.
+
+Activation therefore depends on one genuine owner-initiated Portal voice note:
+compare the Portal's pre-upload digest to the exact runtime file, then return one
+explicitly bound answer. If bytes differ, keep the gate closed and inspect the
+documented upload transformation. Do not weaken to fuzzy matching or insert a
+synthetic prompt. A failure here is a specific upload-contract problem, not a
+reason to assume every Portal feature needs upstream support.
 
 ## Rich content
 
@@ -126,6 +166,39 @@ mode, with no speech permission. They must not bypass the family-accessible
 screen policy. Origin isolation alone does not make responses from the same
 private Muse context child-safe. Do not enable proactive cards by default while
 that visibility policy is unresolved.
+
+## Backlog informed by the existing Muse
+
+The capability review separates runtime-authored data from rendering supplied by
+the Android Muse client. The entries in `capability-inventory.json` retain that
+distinction and link to the existing public issues.
+
+| Content | Reported export | Portal implementation implication |
+| --- | --- | --- |
+| Generated or attached images | Actual file bytes in the runtime | Bounded image transfer and native viewer; do not try to fetch `sandbox://` links |
+| TTS speech | MP3 file bytes, selectable available voices | Add a media reply part bound to the same voice request; offline Android TTS remains fallback |
+| Reply options | Plain option strings; `muse.create_options` produces a client widget token | Native Portal buttons send the selected exact text as a new silent user input |
+| HTML, list and map widgets | Authored HTML, list data or map pins | Build Portal viewers for those data; existing client widget tokens and callbacks do not transfer |
+| Documents, decks, spreadsheets and web artifacts | In-chat links or attachments | Verify downloadable files or bounded authorized export per format before promising parity |
+| Video | Tool-schema availability reported, no example verified in this review | Later feasibility item, not a shipped player |
+| Reactions and progress | Client reactions and follow-up chat bubbles | Need their own target IDs and delivery contract; no shared-stream mirroring |
+
+Muse reports plain-text TTS with no SSML/prosody control and no single canonical
+"Muse voice" identifiable from its runtime. Exportable TTS audio is therefore a
+real candidate, but exact mobile conversational-voice parity is not established.
+Keep voice choice explicit rather than advertising unsupported SSML.
+
+`sandbox://` is a chat-client reference, not a remotely fetchable download URL.
+Transfer underlying bytes through the authenticated bridge with size/MIME/hash
+checks. Do not export the runtime filesystem or expose credentials just to render
+an attachment. Hosted artifact links remain client-session-dependent until a
+specific private export is verified.
+
+The proposed order is addressed replies first; images, TTS files and native reply
+options next; documents/artifacts and data-driven widgets after export checks;
+then video, reactions and targeted live updates. Wake words and owner recognition
+stay separate opt-in device features. Main/side chats are supported by the Muse
+runtime, but the Portal still needs explicit selection and isolated subscriptions.
 
 ## Verification before activation
 

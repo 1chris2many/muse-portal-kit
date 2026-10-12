@@ -1,5 +1,6 @@
 """Synthetic local data only. Never sends a message to Muse or a device."""
 import unittest
+import hashlib
 from delivery_model import DeliveryModel, Rejected
 
 
@@ -147,6 +148,67 @@ class DeliveryContractTests(unittest.TestCase):
         self.send()
         with self.assertRaises(Rejected):
             self.model.local_ack("local-a", "native-a", "voice")
+
+
+class UploadBindingTests(unittest.TestCase):
+    def setUp(self):
+        self.model = DeliveryModel()
+        self.digest = hashlib.sha256(b"offline fake audio bytes, never uploaded").hexdigest()
+        self.model.local_ack("local-upload", "native-upload", "voice", self.digest)
+
+    def resolve(self, **changes):
+        args = dict(device_id="portal-fixture", conversation_id="main-fixture",
+                    upload_sha256=self.digest, authenticated=True)
+        args.update(changes)
+        return self.model.resolve_upload(**args)
+
+    def test_exact_bytes_bind_to_original_native_input(self):
+        binding = self.resolve()
+        self.assertEqual(binding["input_message_id"], "native-upload")
+        result = self.model.deliver(dict(binding, version=1, delivery_id="bound-reply",
+                                        content=[dict(type="text", text="Reply to that exact file")]),
+                                    authenticated=True)
+        self.assertTrue(result["speak"])
+
+    def test_identical_pending_audio_rejects_ambiguous_binding(self):
+        self.model.local_ack("another-upload", "another-native", "voice", self.digest)
+        with self.assertRaises(Rejected):
+            self.resolve()
+
+    def test_changed_or_resampled_bytes_do_not_match(self):
+        with self.assertRaises(Rejected):
+            self.resolve(upload_sha256=hashlib.sha256(b"different encoding").hexdigest())
+
+    def test_wrong_device_conversation_or_auth_rejected(self):
+        for changes in [dict(device_id="phone"), dict(conversation_id="private-other"), dict(authenticated=False)]:
+            with self.subTest(changes=changes), self.assertRaises(Rejected):
+                self.resolve(**changes)
+
+    def test_expired_audio_does_not_resolve(self):
+        self.model.now = 300
+        with self.assertRaises(Rejected):
+            self.resolve()
+
+    def test_background_or_clear_revokes_file_lookup(self):
+        self.model.revoke(foreground=False)
+        with self.assertRaises(Rejected):
+            self.resolve()
+
+    def test_consumed_audio_is_not_a_second_request(self):
+        binding = self.resolve()
+        self.model.deliver(dict(binding, version=1, delivery_id="bound-reply",
+                                content=[dict(type="text", text="Fixture")]), authenticated=True)
+        with self.assertRaises(Rejected):
+            self.resolve()
+
+    def test_malformed_digests_rejected(self):
+        for digest in ("", "filename.wav", "a"*63, "G"*64, None):
+            with self.subTest(digest=digest), self.assertRaises(Rejected):
+                self.resolve(upload_sha256=digest)
+
+    def test_photo_hash_cannot_authorize_voice(self):
+        with self.assertRaises(Rejected):
+            self.model.local_ack("photo", "native-photo", "photo", self.digest)
 
 
 if __name__ == "__main__":
