@@ -110,6 +110,19 @@ CPU/thermal load and end-to-end owner interaction still require acceptance testi
 Do not treat an APK build as acoustic validation or enable it unattended. No
 synthetic prompts should be sent to an owner's Muse conversation for testing.
 
+### Reply-options component (offline development slice)
+
+`ReplyOptionsGate` and `ReplyOptionsView` implement bounded native option buttons
+with exact-label taps, request/device/conversation checks, expiry, replay handling
+and clearing. They are **not connected to incoming Muse payloads yet**. The
+`options` content shape is a proposed addressed-delivery format, not a claim that
+the gadget SDK exports `muse.create_options` widgets. The view cannot send a
+message itself. Integration must validate every tap through the gate on its
+executor, then send the exact selected label as a fresh local text input; it must
+also clear both the gate and view on background, reconnect and privacy clear.
+Protocol and Android 9 view fixtures exercise this component without opening a
+Portal connection. See issue [#2](https://github.com/1chris2many/muse-portal-kit/issues/2).
+
 ## Architecture
 
 ```
