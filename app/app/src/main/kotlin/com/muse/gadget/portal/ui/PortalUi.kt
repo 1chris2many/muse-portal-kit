@@ -514,6 +514,11 @@ class PortalDashboard(context: Context) : FrameLayout(context) {
         emptyState.visibility = View.VISIBLE
     }
 
+    fun appendOptions(view: ReplyOptionsView) {
+        (view.parent as? android.view.ViewGroup)?.removeView(view)
+        addConversationCard(view, false)
+    }
+
     /** display.show_animation clears images but preserves message text and captions. */
     fun clearImages() {
         for (i in 0 until transcript.childCount) {

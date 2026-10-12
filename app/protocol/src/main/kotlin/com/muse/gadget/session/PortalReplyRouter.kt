@@ -5,7 +5,8 @@ package com.muse.gadget.session
  * This is origin isolation, not content moderation or a separate Muse session.
  */
 class PortalReplyRouter(now: () -> Long = { System.nanoTime() / 1_000_000 }) {
-    data class Delivery(val text: String, val display: Boolean, val speak: Boolean)
+    data class Delivery(val text: String, val display: Boolean, val speak: Boolean,
+        val inputMessageId: String? = null, val final: Boolean = true)
     private val display = VoiceReplyGate(now)
     private val speech = VoiceReplyGate(now)
 
@@ -13,19 +14,20 @@ class PortalReplyRouter(now: () -> Long = { System.nanoTime() / 1_000_000 }) {
         val visible = display.acknowledge(messageId)
         val audible = if (voice) speech.acknowledge(messageId) else emptyList()
         return (visible + audible).distinctBy { it.id }.map { event ->
-            Delivery(event.fullText, visible.any { it.id == event.id }, audible.any { it.id == event.id })
+            Delivery(event.fullText, visible.any { it.id == event.id }, audible.any { it.id == event.id }, event.replyTo,
+                !event.id.endsWith("#presentation"))
         }
     }
 
     fun receive(event: SubscribeParser.Event.MessageDone): Delivery =
-        Delivery(event.fullText, display.receive(event), speech.receive(event))
+        Delivery(event.fullText, display.receive(event), speech.receive(event), event.replyTo)
 
     /** Rich content is announced in words, under the same display gate; it is never spoken
      * and its files are never fetched (a gadget's token cannot read them: SDK issue 186). */
     fun receivePresentation(event: SubscribeParser.Event.Presentation): Delivery {
         val note = presentationNote(event.kinds)
         val announced = SubscribeParser.Event.MessageDone("${event.id}#presentation", note, event.replyTo)
-        return Delivery(note, display.receive(announced), false)
+        return Delivery(note, display.receive(announced), false, event.replyTo, false)
     }
 
     companion object {

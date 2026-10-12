@@ -31,7 +31,9 @@ class MuseConnection(private val store: DeviceStore, private val status: (String
     /** display.draw_url: shows one policy-checked https image; answers (payload, error). */
     private val image: ((String,(JSONObject?,JSONObject?)->Unit)->Unit)? = null,
     /** display.show_animation: clears images shown by display.draw_url. */
-    private val clearImage: (()->Unit)? = null) {
+    private val clearImage: (()->Unit)? = null,
+    private val acknowledged: (String,String)->Unit = {_,_->},
+    private val nativeReply: ((PortalReplyRouter.Delivery)->Unit)? = null) {
     private val http=OkHttpClient.Builder().connectTimeout(15,TimeUnit.SECONDS)
         .readTimeout(30,TimeUnit.SECONDS).pingInterval(20,TimeUnit.SECONDS)
         .followRedirects(false).followSslRedirects(false).build()
@@ -49,6 +51,7 @@ class MuseConnection(private val store: DeviceStore, private val status: (String
     private val invocations=LinkedHashSet<String>()
     private val sends=mutableSetOf<Long>()
     private val voiceSends=mutableMapOf<Long,String>()
+    private val localSends=mutableMapOf<Long,String>()
     private val ackBodies=mutableMapOf<Long,ByteArray>()
     private val transcripts=VoiceTranscripts()
     private val replies=PortalReplyRouter()
@@ -67,7 +70,7 @@ class MuseConnection(private val store: DeviceStore, private val status: (String
     private fun fetch(c: JSONObject): Pair<Int,List<VmInfo>> {
         val req=Request.Builder().url(root(c)+Identity.FETCH_VMS_PATH)
             .header("Authorization","Bearer "+c.getString("access_token"))
-            .header("X-API-Version","1.0.0").header("User-Agent","muse-portal/0.3.0").build()
+            .header("X-API-Version","1.0.0").header("User-Agent","muse-portal/0.4.1").build()
         http.newCall(req).execute().use { r ->
             return r.code to if(r.isSuccessful) MuseAccountApi.parseVmList(r.body?.string()?:"") else emptyList()
         }
@@ -82,7 +85,7 @@ class MuseConnection(private val store: DeviceStore, private val status: (String
         ready=false;readyChanged(false)
         val mine=++epoch
         socket?.cancel();transport=null;handshake=null;controlBytes=ByteArray(0);lines=ByteArray(0)
-        sends.clear();voiceSends.clear();ackBodies.clear();parser=newParser();replies.reset()
+        sends.clear();voiceSends.clear();localSends.clear();ackBodies.clear();parser=newParser();replies.reset()
         try {
             val c=store.read("pairing") ?: throw IllegalStateException("Pair this device first.")
             var result=fetch(c)
@@ -138,7 +141,7 @@ class MuseConnection(private val store: DeviceStore, private val status: (String
         controlId=request.streamId;send(request.frames)
         registration=UUID.randomUUID().toString()
         val params=JSONObject().put("node_id",store.nodeId).put("display_name","Muse Portal")
-            .put("platform","android").put("model_id","portal").put("version","0.3.0")
+            .put("platform","android").put("model_id","portal").put("version","0.4.1")
             .put("device_family","homehub").put("is_wakeup_supported",false).put("commands_v2",JSONObject().apply {
                 if(photo!=null)put("camera.capture",JSONObject()
                     .put("description","Take one RGB still photo on this Portal now. Owner has enabled capture without confirmation. Requires app foreground and camera permission; physical shutter applies. Returns JPEG data_base64 (max 128 KiB). No video or saved files.")
@@ -183,6 +186,7 @@ class MuseConnection(private val store: DeviceStore, private val status: (String
                 val parentId=ack.opt("reply_to_message_id") as? String
                 android.util.Log.i("MusePortalState","Voice ACK: message ID present=${messageId.isNotBlank()}, parent ID present=${!parentId.isNullOrBlank()}")
                 val localId=voiceSends.remove(f.streamId)
+                localSends.remove(f.streamId)?.let { acknowledged(it,messageId) }
                 if(localId!=null)transcripts.acknowledge(localId,messageId,parentId)
                     ?.let {transcript(it.first,it.second)}
                 replies.acknowledge(messageId,voice=localId!=null).forEach(::deliverReply)
@@ -303,15 +307,17 @@ class MuseConnection(private val store: DeviceStore, private val status: (String
         if(end)sends.remove(f.streamId)
     }
     private fun deliverReply(delivery:PortalReplyRouter.Delivery) {
+        if(nativeReply!=null) { nativeReply.invoke(delivery); return }
         if(delivery.display)reply(delivery.text)
         if(delivery.speak)voiceReply(delivery.text)
     }
-    fun sendText(text: String) {
+    fun sendText(text: String, localId: String = UUID.randomUUID().toString()) {
         if(!ready){status("Not connected. Nothing sent.");return}
         work.execute {try{
             require(text.length<=16000)
             val request=transport!!.encryptHttpRequest("POST",Identity.CHAT_STREAM_PATH,
                 ChatStreams.textBody(text,store.nodeId),headers=ChatStreams.chatHeaders(UUID.randomUUID().toString()))
+            localSends[request.streamId]=localId
             sends.add(request.streamId);send(request.frames)
         }catch(_:Exception){fail("Send interrupted; not automatically resent")}}
     }
@@ -324,13 +330,14 @@ class MuseConnection(private val store: DeviceStore, private val status: (String
                 .toString().toByteArray()
             val request=transport!!.startStreamRequest("POST",Identity.CHAT_STREAM_PATH,headers=ChatStreams.chatHeaders(UUID.randomUUID().toString()))
             voiceSends[request.streamId]=localId
+            localSends[request.streamId]=localId
             sends.add(request.streamId);send(request.frames)
             b.asList().chunked(6144).forEachIndexed {i,chunk ->
                 send(transport!!.encryptBodyChunk(request.streamId,chunk.toByteArray(),endBody=(i+1)*6144>=b.size))
             }
         }catch(_:Exception){fail("Voice send interrupted; not automatically resent")}}
     }
-    fun sendPhoto(jpeg:ByteArray) {
+    fun sendPhoto(jpeg:ByteArray, localId: String = UUID.randomUUID().toString()) {
         if(!ready){status("Not connected. Photo was not sent.");return}
         work.execute {try{
             require(jpeg.size<=128*1024)
@@ -339,6 +346,7 @@ class MuseConnection(private val store: DeviceStore, private val status: (String
                     .put("filename","portal_photo.jpg").put("data_base64",android.util.Base64.encodeToString(jpeg,android.util.Base64.NO_WRAP))))
                 .toString().toByteArray()
             val request=transport!!.startStreamRequest("POST",Identity.CHAT_STREAM_PATH,headers=ChatStreams.chatHeaders(UUID.randomUUID().toString()))
+            localSends[request.streamId]=localId
             sends.add(request.streamId);send(request.frames)
             for(offset in body.indices step 6144)send(transport!!.encryptBodyChunk(request.streamId,
                 body.copyOfRange(offset,minOf(offset+6144,body.size)),endBody=offset+6144>=body.size))
