@@ -35,7 +35,7 @@ android {
 dependencies {
     implementation(project(":protocol"))
 
-    // Edge-TTS transport (OkHttp WebSocket) + openWakeWord (ONNX Runtime).
+    // Muse transport (OkHttp WebSocket). The unwired Edge Read Aloud prototype is in /legacy/android/tts.
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     testImplementation(kotlin("test"))
