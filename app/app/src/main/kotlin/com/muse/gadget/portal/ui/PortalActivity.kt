@@ -51,6 +51,7 @@ class PortalActivity: Activity() {
     private var capture: Thread?=null
     private val camera=PortalCamera()
     private val imageFetcher=PortalImageFetcher()
+    private val displayGuard=com.muse.gadget.display.DisplayGuard()
     @Volatile private var imageBusy=false
     private lateinit var cameraState:TextView
     private var cameraBusy=false
@@ -61,7 +62,11 @@ class PortalActivity: Activity() {
     private lateinit var deviceStatus:DeviceStatusView
     private var connected=false
 
+    /** Clear, privacy expiry, backgrounding, reconnect, display.show_animation: an image still in
+     * flight must not land afterwards, so its token is revoked and the download cancelled. */
+    private fun revokeImages(){displayGuard.revoke();imageFetcher.cancel()}
     private fun clearConversation() {
+        revokeImages()
         transcript.removeAllViews()
         voiceBubbles.clear()
         if(::messageInput.isInitialized)messageInput.text.clear()
@@ -124,6 +129,7 @@ class PortalActivity: Activity() {
         connection=MuseConnection(store,::status,{text ->runOnUiThread{
             if(foreground)append("Muse",text)
         }},{ready ->runOnUiThread{
+            if(!ready)revokeImages()
             connected=ready;talk.isEnabled=ready;send.isEnabled=ready
             deviceStatus.show(if(ready)"READY" else "CONNECTING",if(ready)"Hold to talk · Your history stays off this screen" else "Opening the secure connection")
         }}, {id,text ->runOnUiThread{
@@ -232,6 +238,7 @@ class PortalActivity: Activity() {
     }
     /** display.show_animation: drops image cards now; text stays until Clear or the privacy timer. */
     private fun clearImages(){
+        revokeImages()
         for(i in transcript.childCount-1 downTo 0)if(transcript.getChildAt(i).tag=="image")transcript.removeViewAt(i)
     }
     /** display.draw_url: one policy-checked https image, fetched off the UI thread, shown only in the foreground. */
@@ -240,12 +247,18 @@ class PortalActivity: Activity() {
         if(!foreground){done(null,error("not_foreground","Open the Portal app before showing an image."));return}
         if(imageBusy){done(null,error("busy","An image is already being shown; try again in a moment."));return}
         imageBusy=true
+        val token=displayGuard.begin()
         Thread({
             try{
                 val shown=imageFetcher.fetch(url)
                 runOnUiThread{
                     imageBusy=false
-                    if(!foreground){shown.bitmap.recycle();done(null,error("not_foreground","The Portal app left the foreground; nothing was shown."));return@runOnUiThread}
+                    // Rechecked on the UI thread right before display: a clear since the request began wins.
+                    if(!foreground||!displayGuard.valid(token)){
+                        shown.bitmap.recycle()
+                        done(null,error("cancelled",if(!foreground)"The Portal app left the foreground; nothing was shown." else "The screen was cleared before the image arrived; nothing was shown."))
+                        return@runOnUiThread
+                    }
                     appendImage("Muse","Image from Muse · ${shown.width}×${shown.height}",shown.bitmap,520)
                     android.util.Log.i("MusePortalState","Image shown; format=${shown.format}; bytes=${shown.bytes}; scale=${shown.scale}")
                     done(JSONObject().put("format",shown.format).put("width",shown.width).put("height",shown.height)

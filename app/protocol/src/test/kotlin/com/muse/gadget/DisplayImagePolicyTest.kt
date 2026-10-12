@@ -1,7 +1,9 @@
 package com.muse.gadget
 
+import com.muse.gadget.display.DisplayGuard
 import com.muse.gadget.display.DisplayImagePolicy
 import com.muse.gadget.display.DisplayImagePolicy.Check
+import java.net.InetAddress
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
@@ -64,5 +66,58 @@ class DisplayImagePolicyTest {
         assertEquals(0, DisplayImagePolicy.sampleSize(4097, 100))
         assertEquals(0, DisplayImagePolicy.sampleSize(0, 0))
         assertEquals(0, DisplayImagePolicy.sampleSize(-1, 50))
+    }
+
+    private fun addr(text: String): InetAddress = InetAddress.getByName(text) // literals only: no DNS
+
+    @Test fun `resolved addresses must be public, including those embedded in IPv6`() {
+        val private = listOf("10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.0.1", "127.0.0.1", "127.8.8.8",
+            "0.0.0.0", "169.254.1.1", "100.64.0.1", "100.127.255.255", "192.0.0.1", "192.0.2.1", "198.18.0.1",
+            "198.51.100.7", "203.0.113.9", "224.0.0.1", "240.0.0.1", "255.255.255.255",
+            "::1", "::", "fe80::1", "fec0::1", "fc00::1", "fd12:3456::1", "ff02::1", "2001:db8::1",
+            "::ffff:10.0.0.1", "::ffff:127.0.0.1", "::ffff:192.168.1.1", "64:ff9b::a00:1", "2002:c0a8:101::1")
+        for (text in private) assertFalse(DisplayImagePolicy.isPublicAddress(addr(text)), text)
+        val public = listOf("8.8.8.8", "93.184.216.34", "172.32.0.1", "100.128.0.1", "100.63.255.255", "1.1.1.1",
+            "2606:4700::1111", "2a00:1450:4001::8a", "::ffff:8.8.8.8", "64:ff9b::808:808", "2002:808:808::1")
+        for (text in public) assertTrue(DisplayImagePolicy.isPublicAddress(addr(text)), text)
+    }
+
+    @Test fun `a resolver answer with any private address is refused whole`() {
+        val good = listOf(addr("93.184.216.34"), addr("2606:4700::1111"))
+        assertEquals(good, DisplayImagePolicy.vetAddresses(good))
+        assertNull(DisplayImagePolicy.vetAddresses(listOf(addr("93.184.216.34"), addr("10.0.0.5"))))
+        assertNull(DisplayImagePolicy.vetAddresses(listOf(addr("2606:4700::1111"), addr("::ffff:192.168.1.1"))))
+        assertNull(DisplayImagePolicy.vetAddresses(listOf(addr("127.0.0.1"))))
+        assertNull(DisplayImagePolicy.vetAddresses(emptyList()))
+    }
+
+    @Test fun `the deadline is one budget for the whole request`() {
+        assertEquals(DisplayImagePolicy.DEADLINE_MS, DisplayImagePolicy.remainingBudgetMs(0))
+        assertEquals(1_000L, DisplayImagePolicy.remainingBudgetMs(DisplayImagePolicy.DEADLINE_MS - 1_000))
+        assertTrue(DisplayImagePolicy.remainingBudgetMs(DisplayImagePolicy.DEADLINE_MS) <= 0)
+        assertTrue(DisplayImagePolicy.remainingBudgetMs(DisplayImagePolicy.DEADLINE_MS + 5) <= 0)
+    }
+
+    @Test fun `an image completing after any clear path is refused`() {
+        for (path in listOf("Clear", "privacy expiry", "backgrounding", "reconnect", "display.show_animation")) {
+            val guard = DisplayGuard()
+            val token = guard.begin()
+            guard.revoke()
+            assertFalse(guard.valid(token), "fetch finished after $path")
+        }
+    }
+
+    @Test fun `only requests begun after the last clear are shown`() {
+        val guard = DisplayGuard()
+        val untouched = guard.begin()
+        assertTrue(guard.valid(untouched))
+        val older = guard.begin()
+        guard.revoke()
+        val newer = guard.begin()
+        assertFalse(guard.valid(older))
+        assertTrue(guard.valid(newer))
+        guard.revoke(); guard.revoke()
+        assertFalse(guard.valid(newer))
+        assertTrue(guard.valid(guard.begin()))
     }
 }

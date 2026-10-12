@@ -1,6 +1,8 @@
 package com.muse.gadget.display
 
+import java.net.InetAddress
 import java.net.URI
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * The two display commands this Portal advertises in `link.register`, named
@@ -80,6 +82,75 @@ object DisplayImagePolicy {
         return checkUrl(location)
     }
 
+    /**
+     * The resolver's answers for a host, or null when any of them is not a public
+     * address. A mixed answer is refused whole: the connection must only ever use
+     * addresses vetted here, and this list is what it connects to.
+     */
+    fun vetAddresses(addresses: List<InetAddress>): List<InetAddress>? =
+        if (addresses.isEmpty() || addresses.any { !isPublicAddress(it) }) null else addresses
+
+    /** True only for a globally routable unicast address, IPv4 or IPv6, including IPv4 embedded in IPv6. */
+    fun isPublicAddress(address: InetAddress): Boolean {
+        val bytes = address.address
+        return when (bytes.size) {
+            4 -> isPublicIpv4(bytes)
+            16 -> embeddedIpv4(bytes)?.let { isPublicIpv4(it) } ?: isPublicIpv6(bytes)
+            else -> false
+        }
+    }
+
+    /** Milliseconds left of the whole-request budget; zero or less means stop. */
+    fun remainingBudgetMs(elapsedMs: Long): Long = DEADLINE_MS - elapsedMs
+
+    private fun isPublicIpv4(b: ByteArray): Boolean {
+        val a = b[0].toInt() and 0xFF
+        val c = b[1].toInt() and 0xFF
+        val d = b[2].toInt() and 0xFF
+        return when {
+            a == 0 || a == 10 || a == 127 -> false                 // this network, private, loopback
+            a == 100 && c in 64..127 -> false                       // carrier-grade NAT (Tailscale lives here)
+            a == 169 && c == 254 -> false                           // link-local
+            a == 172 && c in 16..31 -> false                        // private
+            a == 192 && c == 0 && (d == 0 || d == 2) -> false       // IETF assignments, documentation
+            a == 192 && c == 168 -> false                           // private
+            a == 198 && c in 18..19 -> false                        // benchmarking
+            a == 198 && c == 51 && d == 100 -> false                // documentation
+            a == 203 && c == 0 && d == 113 -> false                 // documentation
+            a >= 224 -> false                                       // multicast, reserved, broadcast
+            else -> true
+        }
+    }
+
+    /** IPv4 carried inside an IPv6 address: mapped ::ffff:a.b.c.d, NAT64 64:ff9b::/96, 6to4 2002::/16. */
+    private fun embeddedIpv4(b: ByteArray): ByteArray? {
+        val zeroTo = { n: Int -> (0 until n).all { b[it] == 0.toByte() } }
+        val mapped = zeroTo(10) && b[10] == 0xFF.toByte() && b[11] == 0xFF.toByte()
+        val nat64 = b[0] == 0.toByte() && b[1] == 0x64.toByte() && b[2] == 0xFF.toByte() && b[3] == 0x9B.toByte() &&
+            (4 until 12).all { b[it] == 0.toByte() }
+        val sixToFour = b[0] == 0x20.toByte() && b[1] == 0x02.toByte()
+        return when {
+            mapped || nat64 -> b.copyOfRange(12, 16)
+            sixToFour -> b.copyOfRange(2, 6)
+            else -> null
+        }
+    }
+
+    private fun isPublicIpv6(b: ByteArray): Boolean {
+        val first = b[0].toInt() and 0xFF
+        val second = b[1].toInt() and 0xFF
+        val unspecifiedOrLoopback = (0 until 15).all { b[it] == 0.toByte() } && (b[15] == 0.toByte() || b[15] == 1.toByte())
+        return when {
+            unspecifiedOrLoopback -> false
+            first == 0xFF -> false                                   // multicast
+            first and 0xFE == 0xFC -> false                          // fc00::/7 unique local
+            first == 0xFE && second and 0xC0 == 0x80 -> false        // fe80::/10 link-local
+            first == 0xFE && second and 0xC0 == 0xC0 -> false        // fec0::/10 site-local
+            first == 0x20 && second == 0x01 && b[2] == 0x0D.toByte() && b[3] == 0xB8.toByte() -> false // 2001:db8::/32
+            else -> first and 0xE0 == 0x20                           // 2000::/3 global unicast only
+        }
+    }
+
     /** A known Content-Length over the cap fails before any body is read. */
     fun lengthAllowed(contentLength: Long): Boolean = contentLength <= MAX_BYTES
 
@@ -106,4 +177,23 @@ object DisplayImagePolicy {
     private val PNG_MAGIC = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A)
     private val RIFF = "RIFF".toByteArray(Charsets.US_ASCII)
     private val WEBP = "WEBP".toByteArray(Charsets.US_ASCII)
+}
+
+/**
+ * Generation token for images in flight. Every clear path (Clear, the privacy
+ * timer, backgrounding, reconnect, `display.show_animation`) revokes requests
+ * begun before it, so a slow fetch that completes later cannot put an image back
+ * on a screen the owner has cleared. Safe to use from any thread.
+ */
+class DisplayGuard {
+    private val generation = AtomicLong(0)
+
+    /** Token for a request starting now. */
+    fun begin(): Long = generation.get()
+
+    /** Invalidates every token handed out so far; returns the new generation. */
+    fun revoke(): Long = generation.incrementAndGet()
+
+    /** True only when nothing has been cleared since [begin] handed out [token]. */
+    fun valid(token: Long): Boolean = token == generation.get()
 }
