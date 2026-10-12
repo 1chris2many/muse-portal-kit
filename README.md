@@ -54,7 +54,7 @@ product; the sections below distinguish implemented behavior from planned work.
 
 ### Experimental local wake word
 
-This branch adds **opt-in “Nova” detection**, not background listening. Build the
+Version 0.4.0 adds **opt-in “Nova” detection**, not background listening. Build the
 model-enabled candidate explicitly from the repository root:
 
 ```bash
