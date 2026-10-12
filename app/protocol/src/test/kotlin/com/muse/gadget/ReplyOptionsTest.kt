@@ -40,7 +40,7 @@ class ReplyOptionsTest {
     }
 
     @Test fun `payload parses bounded string labels only`() {
-        val ok = ReplyOptionsPolicy.parseContent(Json.parse("""{"type":"options","options":[" Yes ","No","Maybe later"]}"""))
+        val ok = ReplyOptionsPolicy.parseContent(Json.parse("""{"type":"options","options":["Yes","No","Maybe later"]}"""))
         assertEquals(Parse.Ok(listOf("Yes", "No", "Maybe later")), ok)
 
         fun code(json: String): String {
@@ -64,7 +64,9 @@ class ReplyOptionsTest {
         assertEquals("bad_label", rejectedLabels(listOf("a".repeat(ReplyOptionsPolicy.MAX_LABEL_CHARS + 1))))
         assertEquals("bad_label", rejectedLabels(listOf("line\nbreak")))
         assertEquals("bad_label", rejectedLabels(listOf("tab\there")))
-        assertEquals("duplicate_option", rejectedLabels(listOf("Yes", " Yes ")))
+        assertEquals("duplicate_option", rejectedLabels(listOf("Yes", "Yes")))
+        for (label in listOf(" Yes ", "Yes\u2028please", "Yes\u2029please", "Yes\u202eplease"))
+            assertEquals("bad_label", rejectedLabels(listOf(label)))
         assertEquals(
             Parse.Ok(listOf("a".repeat(ReplyOptionsPolicy.MAX_LABEL_CHARS), "Yes", "yes")),
             ReplyOptionsPolicy.checkLabels(listOf("a".repeat(ReplyOptionsPolicy.MAX_LABEL_CHARS), "Yes", "yes")),
@@ -147,5 +149,47 @@ class ReplyOptionsTest {
         // A fresh local send after Clear works again.
         gate.openRequest("r3")
         shown(gate, delivery(id = "d3", request = "r3"))
+    }
+
+    @Test fun `a young card cannot outlive its old request or revive by repeating open`() {
+        val gate = gate(); gate.openRequest("r1")
+        clock += ReplyOptionsPolicy.REQUEST_LIFETIME_MS - 1
+        gate.openRequest("r1") // Retries must not renew a pending request's authority.
+        val card = shown(gate, delivery())
+        assertEquals(clock + 1, card.expiresAtMs)
+        clock++
+        assertTrue(gate.select(card.token, 0, "Yes") is Selection.Rejected)
+    }
+
+    @Test fun `evicting a request invalidates its visible card`() {
+        val gate = gate(); gate.openRequest("r1")
+        val card = shown(gate, delivery())
+        repeat(20) { gate.openRequest("new-$it") }
+        assertTrue(gate.select(card.token, 0, "Yes") is Selection.Rejected)
+    }
+
+    @Test fun `delivery identity includes request not just labels`() {
+        val gate = gate(); gate.openRequest("r1"); gate.openRequest("r2")
+        shown(gate, delivery())
+        assertEquals("delivery_conflict", rejectedPresent(gate, delivery(request = "r2")))
+        assertEquals("bad_delivery", rejectedPresent(gate, delivery(id = "x".repeat(129))))
+    }
+
+    @Test fun `mutating caller or UI lists cannot alter the selected label`() {
+        val gate = gate(); gate.openRequest("r1")
+        val input = mutableListOf<String?>("Yes", "No")
+        val card = shown(gate, delivery(options = input))
+        input[0] = "Changed input"
+        (card.labels as MutableList<String>)[0] = "Changed UI"
+        assertEquals("label_mismatch", (gate.select(card.token, 0, "Changed UI") as Selection.Rejected).code)
+        assertEquals(Selection.Selected("r1", "Yes"), gate.select(card.token, 0, "Yes"))
+        assertEquals(Presentation.Receipt, gate.present(delivery()))
+    }
+
+    @Test fun `card expires exactly at its deadline`() {
+        val gate = gate(); gate.openRequest("r1")
+        val card = shown(gate, delivery())
+        clock = card.expiresAtMs
+        assertTrue(gate.select(card.token, 0, "Yes") is Selection.Rejected)
     }
 }

@@ -39,19 +39,20 @@ object ReplyOptionsPolicy {
         return checkLabels(arr.items.map { (it as? JsonValue.Str)?.value })
     }
 
-    /** 1..[MAX_OPTIONS] single-line labels: trimmed, bounded, no control characters, no duplicates. */
+    /** Exact authored bytes; reject padding instead of silently rewriting an option. */
     fun checkLabels(raw: List<String?>): Parse {
         if (raw.isEmpty()) return Parse.Rejected("no_options", "at least one option is required")
         if (raw.size > MAX_OPTIONS) return Parse.Rejected("too_many_options", "at most $MAX_OPTIONS options")
         val labels = ArrayList<String>(raw.size)
         for (entry in raw) {
-            val label = entry?.trim()
+            val label = entry
                 ?: return Parse.Rejected("bad_label", "every option must be a string")
-            if (label.isEmpty()) return Parse.Rejected("bad_label", "option labels must not be blank")
+            if (label.isEmpty() || label != label.trim()) return Parse.Rejected("bad_label", "option labels must not be blank or padded")
             if (label.length > MAX_LABEL_CHARS) {
                 return Parse.Rejected("bad_label", "option labels are capped at $MAX_LABEL_CHARS characters")
             }
-            if (label.any { it.isISOControl() }) {
+            if (label.any { it.isISOControl() || it == '\u2028' || it == '\u2029' ||
+                        it in '\u202a'..'\u202e' || it in '\u2066'..'\u2069' }) {
                 return Parse.Rejected("bad_label", "option labels must be single-line printable text")
             }
             // Two identical buttons would send indistinguishable exact text.
@@ -89,7 +90,7 @@ class ReplyOptionsGate(
     )
 
     /** What the UI may render: [token] names it for [select]; [labels] are the button texts. */
-    data class Card(val token: Long, val requestId: String, val labels: List<String>)
+    data class Card(val token: Long, val requestId: String, val labels: List<String>, val expiresAtMs: Long)
 
     sealed interface Presentation {
         data class Presented(val card: Card) : Presentation
@@ -107,15 +108,15 @@ class ReplyOptionsGate(
 
     private val pending = LinkedHashMap<String, Long>()
     private val consumed = LinkedHashSet<String>()
-    private val seen = LinkedHashMap<String, List<String>>()
+    private data class ReceiptKey(val requestId: String, val labels: List<String>)
+    private val seen = LinkedHashMap<String, ReceiptKey>()
     private var card: Card? = null
-    private var cardShownAt = 0L
     private var nextToken = 1L
 
     /** A real local send on this Portal opens a handle; nothing else may call this. */
     fun openRequest(requestId: String) {
         prune()
-        if (requestId.isBlank() || requestId in consumed) return
+        if (requestId.isBlank() || requestId.length > 128 || requestId in consumed || requestId in pending) return
         pending[requestId] = now()
         while (pending.size > 20) pending.remove(pending.keys.first())
     }
@@ -128,14 +129,15 @@ class ReplyOptionsGate(
         if (delivery.conversationId != conversationId) {
             return Presentation.Rejected("wrong_conversation", "delivery is for another conversation")
         }
-        if (delivery.deliveryId.isBlank()) return Presentation.Rejected("bad_delivery", "delivery id is required")
+        if (delivery.deliveryId.isBlank() || delivery.deliveryId.length > 128) return Presentation.Rejected("bad_delivery", "bounded delivery id is required")
         val parsed = when (val p = ReplyOptionsPolicy.checkLabels(delivery.options)) {
             is ReplyOptionsPolicy.Parse.Ok -> p.labels
             is ReplyOptionsPolicy.Parse.Rejected -> return Presentation.Rejected(p.code, p.message)
         }
         val earlier = seen[delivery.deliveryId]
+        val receipt = ReceiptKey(delivery.requestId, parsed)
         if (earlier != null) {
-            return if (earlier == parsed) Presentation.Receipt
+            return if (earlier == receipt) Presentation.Receipt
             else Presentation.Rejected("delivery_conflict", "a delivery id cannot change its content")
         }
         if (delivery.requestId in consumed) {
@@ -144,12 +146,14 @@ class ReplyOptionsGate(
         if (delivery.requestId !in pending) {
             return Presentation.Rejected("unknown_request", "no live local request matches")
         }
-        seen[delivery.deliveryId] = parsed
+        seen[delivery.deliveryId] = receipt
         while (seen.size > 200) seen.remove(seen.keys.first())
-        val presented = Card(nextToken++, delivery.requestId, parsed)
+        val expiry = minOf(now() + ReplyOptionsPolicy.CARD_LIFETIME_MS,
+            pending.getValue(delivery.requestId) + ReplyOptionsPolicy.REQUEST_LIFETIME_MS)
+        val presented = Card(nextToken++, delivery.requestId, parsed, expiry)
         card = presented
-        cardShownAt = now()
-        return Presentation.Presented(presented)
+        // The UI gets a separate snapshot: mutating a returned list cannot change tap authority.
+        return Presentation.Presented(presented.copy(labels = presented.labels.toList()))
     }
 
     /** Only an owner tap calls this; [shownLabel] must still be the label under the finger. */
@@ -184,6 +188,6 @@ class ReplyOptionsGate(
     private fun prune() {
         val cutoff = now() - ReplyOptionsPolicy.REQUEST_LIFETIME_MS
         pending.entries.removeAll { it.value <= cutoff }
-        if (card != null && now() - cardShownAt > ReplyOptionsPolicy.CARD_LIFETIME_MS) card = null
+        if (card?.let { it.requestId !in pending || now() >= it.expiresAtMs } == true) card = null
     }
 }
