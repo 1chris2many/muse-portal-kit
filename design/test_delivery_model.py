@@ -107,6 +107,16 @@ class DeliveryContractTests(unittest.TestCase):
         with self.assertRaises(Rejected):
             self.send(speak=True)
 
+    def test_voice_permission_does_not_override_local_screen_policy(self):
+        self.model.local_ack("no-screen", "native-no-screen", "voice", allow_display=False)
+        result = self.send(request_id="no-screen", input_message_id="native-no-screen")
+        self.assertFalse(result["display"])
+        self.assertTrue(result["speak"])
+
+    def test_remote_visual_flag_cannot_override_local_screen_policy(self):
+        with self.assertRaises(Rejected):
+            self.send(allow_display=True)
+
     def test_multiple_pending_requests_keep_exact_binding(self):
         self.model.local_ack("local-b", "native-b", "text")
         with self.assertRaises(Rejected):

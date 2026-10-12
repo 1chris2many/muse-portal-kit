@@ -20,6 +20,7 @@ class Pending:
     kind: str
     expires: int
     upload_sha256: str | None = None
+    allow_display: bool = True
 
 
 class DeliveryModel:
@@ -38,9 +39,9 @@ class DeliveryModel:
         self.seen_requests = set()
         self.receipts = {}
 
-    def local_ack(self, request_id, input_id, kind, upload_sha256=None):
+    def local_ack(self, request_id, input_id, kind, upload_sha256=None, *, allow_display=True):
         """Only a trusted local send+ACK may call this; never a remote action."""
-        if (not self.foreground or kind not in ("voice", "text", "photo", "widget")
+        if (not self.foreground or type(allow_display) is not bool or kind not in ("voice", "text", "photo", "widget")
                 or not request_id or not input_id or request_id in self.seen_requests):
             raise Rejected("invalid local request")
         if upload_sha256 is not None and (kind != "voice" or not isinstance(upload_sha256, str)
@@ -49,7 +50,7 @@ class DeliveryModel:
         if len(self.seen_requests) >= 100:
             raise Rejected("generation capacity; reset required")
         self.seen_requests.add(request_id)
-        self.pending[request_id] = Pending(input_id, kind, self.now + 300, upload_sha256)
+        self.pending[request_id] = Pending(input_id, kind, self.now + 300, upload_sha256, allow_display)
 
     def resolve_upload(self, device_id, conversation_id, upload_sha256, *, authenticated=False):
         """Candidate only: byte preservation in Muse's upload pipeline is unverified.
@@ -126,5 +127,5 @@ class DeliveryModel:
             raise Rejected("recording; retry same delivery when ready")
         self.receipts[delivery_id] = digest
         del self.pending[envelope["request_id"]]
-        return {"state": "accepted", "display": True,
+        return {"state": "accepted", "display": request.allow_display,
                 "speak": request.kind == "voice" and self.speech_enabled}

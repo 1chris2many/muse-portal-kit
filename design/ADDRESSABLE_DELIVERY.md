@@ -23,7 +23,9 @@ the existing Muse runtime. It is not a widget or artifact export API.
 
 1. A real local send creates a random request handle on the Portal. The local
    input type, selected conversation, connection generation and monotonic expiry
-   are immutable. A microphone input does not identify the speaker as the owner.
+   are immutable. The local screen policy separately records whether a visible
+   answer is allowed; permission to speak does not grant permission to display.
+   A microphone input does not identify the speaker as the owner.
 2. The native ACK binds that handle to the server's input message ID. Pending
    handles cannot be created by a remote reply caller. A failed or ambiguous send
    grants no reply permission.
