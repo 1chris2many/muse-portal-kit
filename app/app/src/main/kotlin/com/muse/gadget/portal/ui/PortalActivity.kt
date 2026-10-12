@@ -53,6 +53,18 @@ class PortalActivity: Activity() {
     private lateinit var cameraState:TextView
     private var cameraBusy=false
     private var localBridge:LocalPortalBridge?=null
+    private val privacyHandler=android.os.Handler(android.os.Looper.getMainLooper())
+    private val clearVisible=Runnable { clearConversation() }
+    private lateinit var messageInput:EditText
+    private lateinit var deviceStatus:DeviceStatusView
+    private var connected=false
+
+    private fun clearConversation() {
+        transcript.removeAllViews()
+        voiceBubbles.clear()
+        if(::messageInput.isInitialized)messageInput.text.clear()
+        tts?.stop()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -69,6 +81,12 @@ class PortalActivity: Activity() {
         header.addView(heading,LinearLayout.LayoutParams(0,-2,1f))
         header.addView(button("Settings"){showSettings()})
         layout.addView(header)
+        layout.addView(label("Private history hidden · Only linked Portal replies appear · Clears after 2 minutes",13f)
+            .apply{setTextColor(Color.rgb(153,171,194));setPadding(0,8,0,4)})
+        header.addView(button("Clear"){clearConversation()})
+        header.addView(button("Stop audio"){tts?.stop()})
+        deviceStatus=DeviceStatusView(this)
+        layout.addView(deviceStatus,LinearLayout.LayoutParams(-1,110).apply{topMargin=10;bottomMargin=6})
         audioState=label("Checking speaker…",13f).apply{setTextColor(Color.rgb(153,171,194));setPadding(0,8,0,12)}
         layout.addView(audioState)
         val cameraRow=LinearLayout(this)
@@ -83,6 +101,7 @@ class PortalActivity: Activity() {
         layout.addView(scroll,LinearLayout.LayoutParams(-1,0,1f))
         val inputRow=LinearLayout(this)
         val input=EditText(this).apply{hint="Or type a message…";textSize=18f;setPadding(20,12,20,12);background=panel(Color.rgb(28,38,54));setTextColor(Color.WHITE);setHintTextColor(Color.LTGRAY);inputType=InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE;maxLines=3}
+        messageInput=input
         inputRow.addView(input,LinearLayout.LayoutParams(0,-2,1f))
         send=button("Send"){
             val text=input.text.toString().trim()
@@ -102,7 +121,10 @@ class PortalActivity: Activity() {
         setContentView(layout)
         connection=MuseConnection(store,::status,{text ->runOnUiThread{
             if(foreground)append("Muse",text)
-        }},{ready ->runOnUiThread{talk.isEnabled=ready;send.isEnabled=ready}}, {id,text ->runOnUiThread{
+        }},{ready ->runOnUiThread{
+            connected=ready;talk.isEnabled=ready;send.isEnabled=ready
+            deviceStatus.show(if(ready)"READY" else "CONNECTING",if(ready)"Hold to talk · Your history stays off this screen" else "Opening the secure connection")
+        }}, {id,text ->runOnUiThread{
             voiceBubbles[id]?.text=text
             android.util.Log.i("MusePortalState","Voice transcript received and displayed.")
         }}, {done ->runOnUiThread{takePhoto("Muse",done)}}, {text ->runOnUiThread{
@@ -120,8 +142,9 @@ class PortalActivity: Activity() {
             }
             audioState.text=if(offlineSpeech)"Speaker ready · On-device voice" else "Audio unavailable · No offline English voice found"
             tts?.setOnUtteranceProgressListener(object:UtteranceProgressListener(){
-                override fun onStart(id:String?){runOnUiThread{audioState.text="Speaking · Tap Stop in Settings to interrupt"};android.util.Log.i("MusePortalState","Speech playback started.")}
-                override fun onDone(id:String?){runOnUiThread{audioState.text="Speaker ready · On-device voice"};android.util.Log.i("MusePortalState","Speech playback completed.")}
+                override fun onStart(id:String?){runOnUiThread{audioState.text="Speaking · Tap Stop audio to interrupt";deviceStatus.show("SPEAKING","On-device voice · Tap Stop audio to interrupt")};android.util.Log.i("MusePortalState","Speech playback started.")}
+                override fun onDone(id:String?){runOnUiThread{audioState.text="Speaker ready · On-device voice";deviceStatus.show(if(connected)"READY" else "OFFLINE","Hold to talk")};android.util.Log.i("MusePortalState","Speech playback completed.")}
+                override fun onStop(id:String?,interrupted:Boolean){runOnUiThread{if(!recording)deviceStatus.show(if(connected)"READY" else "OFFLINE","Audio stopped")}}
                 @Deprecated("Android legacy callback") override fun onError(id:String?){runOnUiThread{audioState.text="Speech failed · Check audio settings"};android.util.Log.i("MusePortalState","Speech synthesis failed.")}
             })
         }}
@@ -189,6 +212,8 @@ class PortalActivity: Activity() {
     private fun panel(color:Int)=GradientDrawable().apply{setColor(color);cornerRadius=20f}
     private fun button(text:String, action:()->Unit)=Button(this).apply{this.text=text;isAllCaps=false;textSize=16f;setTextColor(Color.WHITE);setOnClickListener{action()}}
     private fun append(who:String,text:String):TextView {
+        privacyHandler.removeCallbacks(clearVisible)
+        privacyHandler.postDelayed(clearVisible,120000)
         val card=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(22,14,22,18);background=panel(if(who=="You")Color.rgb(26,49,60)else Color.rgb(26,34,48))}
         card.addView(label(who.uppercase(Locale.ROOT),12f).apply{setTextColor(Color.rgb(125,208,191));letterSpacing=.12f})
         val body=label(text,21f).apply{setPadding(0,7,0,0);setTextIsSelectable(true);setLineSpacing(3f,1.08f)}
@@ -249,6 +274,7 @@ class PortalActivity: Activity() {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO),10);return
         }
         tts?.stop();cancelled=false;recording=true;talk.text="Listening… release to send"
+        deviceStatus.show("LISTENING","Release to send · Maximum 15 seconds")
         micState.text="Microphone on · Up to 15 seconds"
         capture=Thread{
             var local:AudioRecord?=null
@@ -262,6 +288,13 @@ class PortalActivity: Activity() {
                 while(recording&&foreground&&pcm.size()<480000){
                     val n=local.read(block,0,minOf(block.size,480000-pcm.size()))
                     check(n>=0);if(n>0)pcm.write(block,0,n)
+                    var peak=0
+                    for(i in 0 until n-1 step 2) {
+                        val sample=((block[i].toInt() and 255) or (block[i+1].toInt() shl 8)).toShort().toInt()
+                        peak=maxOf(peak,kotlin.math.abs(sample))
+                    }
+                    val level=peak/32768f;val progress=pcm.size()/480000f
+                    runOnUiThread{if(recording)deviceStatus.show("LISTENING","Release to send · Maximum 15 seconds",level,progress)}
                 }
                 if(!cancelled&&foreground&&pcm.size()>=1600){
                     val data=pcm.toByteArray();val header=VoiceNoteEncoder.wavHeader()
@@ -271,6 +304,7 @@ class PortalActivity: Activity() {
                         voiceBubbles[id]=append("You","Transcribing your voice note…")
                         while(voiceBubbles.size>50)voiceBubbles.remove(voiceBubbles.keys.first())
                         connection.sendVoice(header+data,id)
+                        deviceStatus.show("SENT","Waiting for a reply linked to this Portal")
                         scroll.postDelayed({
                             voiceBubbles[id]?.takeIf{it.text.toString()=="Transcribing your voice note…"}
                                 ?.text="No transcript received yet. Check the connection status."
@@ -282,6 +316,6 @@ class PortalActivity: Activity() {
                 runOnUiThread{talk.text="Hold to talk";micState.text="Microphone off · Hold to speak, release to send"}}
         }.also{it.start()}
     }
-    override fun onStop(){foreground=false;cancelled=true;recording=false;camera.cancel();tts?.stop();super.onStop()}
+    override fun onStop(){foreground=false;cancelled=true;recording=false;camera.cancel();privacyHandler.removeCallbacks(clearVisible);clearConversation();super.onStop()}
     override fun onDestroy(){localBridge?.close();pairing?.stop();connection.close();tts?.shutdown();super.onDestroy()}
 }

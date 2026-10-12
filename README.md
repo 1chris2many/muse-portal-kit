@@ -1,16 +1,21 @@
 # muse-portal-kit
 
-> **Repository:** `github.com/hanfang/muse-portal-kit`
+> **Active development fork:** [1chris2many/muse-portal-kit](https://github.com/1chris2many/muse-portal-kit)
+> · [Original project](https://github.com/hanfang/muse-portal-kit)
 
 Turn a retired **Meta Portal** into a foreground, push-to-talk device for **Muse**.
 Hold Talk, speak, and release. Voice notes go to your existing Muse account;
-server transcripts and replies appear in the conversation. Replies use an
-installed offline Android voice. No always-listening microphone or continuous camera stream.
+server transcripts appear on this device. Replies appear only when the server
+explicitly links them to a request from this Portal. Voice-linked replies can use
+an installed offline Android voice. No always-listening microphone or continuous camera stream.
 
 > **Status:** hardware-tested development build, not a production release.
 > Android 9 Portal installation, encrypted account provisioning, direct Wi-Fi
-> connection, chat acceptance and reconnect have been observed. Transcript and
-> audible reply acceptance are still being tested. The original unwired
+> connection, chat acceptance, voice transcription, camera capture, isolated
+> developer builds, install/rollback and reconnect have been observed. Automatic
+> reply display/audio remains blocked when the server omits reply-parent links.
+> Native remote camera invocation depends on the Muse runtime exposing gadget tools;
+> an authenticated USB-host fallback has been verified. The original unwired
 > always-listening prototype is retained in source but excluded from this build.
 
 ## Architecture
@@ -21,10 +26,10 @@ installed offline Android voice. No always-listening microphone or continuous ca
 │  app)               │   0xFE-framed chunks     │  app)        │
 │                     │                          └──────────────┘
 │  :app (Android)     │   Noise XX handshake
-│   ├─ ChatActivity   │◄──── wss://…/v1/noise ──►┌──────────────┐
+│   ├─ PortalActivity│◄──── wss://…/v1/noise ──►┌──────────────┐
 │   ├─ PortalBlePeri- │   protobuf envelopes     │  Muse VM     │
 │   │   pheral        │   (request/response/     │  (server)    │
-│   └─ VoiceService*  │    datagram)             └──────────────┘
+│   └─ MuseConnection│    datagram)             └──────────────┘
 │                     │
 │  :protocol (JVM)    │   HTTPS (api.muse.ai)
 │   ├─ pairing  (BLE pairing v5: ECDH→transcript→HKDF→AES-GCM)
@@ -34,27 +39,95 @@ installed offline Android voice. No always-listening microphone or continuous ca
 │   ├─ api      (fetch_vms / device_token/refresh client)
 │   └─ identity (hatch-link: device identity constants)
 └─────────────────────┘
-        * planned
 ```
+
+On first-generation Portal firmware without a usable GATT server, the optional
+Mac helper supplies the setup-only BLE peripheral. The Android app still owns
+the identity and connects directly over Wi-Fi afterward.
 
 Protocol flow: BLE pairing v5 establishes `access_token`/`refresh_token` →
 `fetch_vms` picks a VM → WebSocket upgrade → Noise XX handshake → encrypted
-`/chat/stream` requests, `/chat/subscribe` NDJSON events → turn state machine
-settles the reply → TTS speaks it back.
+`/chat/stream` requests, `/chat/subscribe` NDJSON events → explicit local-request
+origin check → device-only reply display and voice-only TTS. Subscription traffic
+alone never grants permission to display or speak.
 
 ## Quick start
 
-Requires JDK 17, Gradle 8.14.3 and Android SDK 35. Configure `ANDROID_HOME`.
+Requires JDK 17 and Android SDK 35 with Build Tools 34.0.0. Configure
+`ANDROID_HOME`. The checked-in wrapper downloads Gradle 8.14.3 with checksum
+verification. Never commit `local.properties`, tokens or signing keys.
 
 ```bash
-# 1. Run the protocol unit tests (no Android SDK needed)
+# Clone this fork; main contains the integrated Android work.
+git clone https://github.com/1chris2many/muse-portal-kit.git
+cd muse-portal-kit
+
+# 1. Run the protocol unit tests
 cd app
-gradle :protocol:test
+./gradlew :protocol:test
 
 # 2. Build the Android app (requires Android SDK)
-gradle :app:assembleDebug
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:assembleDebug
+adb -s YOUR_PORTAL_SERIAL install -r app/build/outputs/apk/debug/app-debug.apk
 ```
+
+The root Android plugin is configured even for protocol-only Gradle invocations;
+install the SDK for this build as a whole. Tests themselves run offline on the JVM.
+GitHub Actions builds the app and runs protocol and helper tests without a paired
+device, account token or conversation. A successful CI run does not verify live
+Muse behavior.
+
+## Handoff to another developer or coding agent
+
+Start with `main` in the public fork. The review branch `feat/portal-live-voice-ui`
+tracks the same integration; upstream [PR 1](https://github.com/hanfang/muse-portal-kit/pull/1)
+contains baseline compatibility fixes and [PR 2](https://github.com/hanfang/muse-portal-kit/pull/2)
+contains the app and development workflow. PR 2 currently includes PR 1's commits.
+
+- App entry point: `app/app/src/main/kotlin/com/muse/gadget/portal/ui/PortalActivity.kt`.
+- Transport: `MuseConnection.kt` in the parent package; protocol and pure tests
+  are in `app/protocol`. `PortalReplyRouter` isolates display and speech origins.
+- Hardware: `PortalCamera.kt`, `LocalPortalBridge.kt`; optional host adapter:
+  `tools/portal_dev.py`. This repo contains no private household service/config.
+- Build/test locally using the commands above. Hardware acceptance uses the
+  owner's real interactions, not generated prompts. **Do not send synthetic
+  text, voice, startup or probe messages into an owner's Muse conversation.**
+- Preserve the existing Muse identity and credentials. Do not create another
+  Muse session as a workaround for missing routing. Do not reinstall by uninstalling:
+  that loses app data. Another machine's debug key cannot update an existing APK;
+  use the owner's existing trusted installer/signing environment or a separately
+  authorized development device. Never publish or copy the signing key into git.
+- An absent parent link must remain hidden/silent. Do not substitute the next
+  assistant message, timing, sequence adjacency or a self-parent ID.
+- Camera use requires owner authorization, Android permission, foreground app
+  and the physical privacy switch. Keep those requirements and build isolation.
+
+Acceptance still outstanding: authoritative reply correlation from the Muse
+runtime, native command invocation in contexts without gadget tools, and broader
+device testing. Android 9 first-generation Portal is the tested hardware; other
+Android devices and later Portal variants are not claimed compatible.
+
+## UI reuse from Muse Gadgets
+
+The official ESP32 UI uses C/LVGL, not Android Views. Its
+[`muse_ui.c`](https://github.com/facebookincubator/muse-gadget-sdk/blob/main/esp32/components/muse/muse_ui.c),
+[`muse_state.h`](https://github.com/facebookincubator/muse-gadget-sdk/blob/main/esp32/components/muse/muse_state.h)
+and settings UI are useful references for a status ring, microphone level meter,
+recording progress, readable captions and persistent speaker controls. This fork
+adapts the status-ring pattern and color palette with an original Android Canvas
+view, a live microphone peak meter and recording-progress ring, plus a visible
+Stop Audio control. No avatar or LVGL widget code is copied. Port the
+interaction patterns into Android; copying the LVGL widgets would require a
+separate rendering/input stack. State must reflect observed events, not pretend
+that the Muse is thinking or speaking.
+
+The SDK's Apache-2.0 license covers most code, but **not the bundled Jollybot
+avatar**. This fork does not redistribute that avatar. Keep upstream notices for
+any code port and check separate asset/font licenses before importing them.
+
+The official [Muse Gadgets showcase](https://gadgets.muse.ai/) accepts project
+submissions through Discord `#projects`; publishing this fork or opening an
+upstream PR does not automatically add it to that showcase.
 
 ## Pairing and first-generation Portal limitations
 
@@ -112,10 +185,18 @@ failure with the combined CoreBluetooth name/service advertisement.
   not replay. Displaying a message alone never authorizes speech.
 - Current live API limitation: observed assistant deltas leave `reply_to_message_id`
   empty and may set `parent_message_id` to the assistant message itself. These
-  replies remain silent, including genuine voice replies, until an authoritative
+  replies remain hidden and silent, including genuine voice replies, until an authoritative
   link is available. No next-message/timing fallback is used.
-- Conversations and recordings are not written to disk; reopening clears the
-  visible conversation. Failed sends are not automatically replayed.
+- Shared/main-chat history and unlinked assistant messages are never displayed.
+  Only replies explicitly parented to this device's acknowledged requests qualify.
+  Typed/photo requests can authorize display, never automatic speech.
+- Conversations and recordings are not written to disk. Clear removes visible
+  messages immediately; backgrounding clears messages and the unsent input. Visible
+  messages expire two minutes after the last new message. Failed sends are not
+  automatically replayed. Android screenshot/recents capture is protected.
+- Origin isolation is **not child-content filtering**: this is still the same
+  Muse conversation, so a genuinely linked answer can draw on its private context.
+  Do not treat it as an isolated child account or an unsupervised child-safe mode.
 - With Android camera permission granted, **Take & share photo** sends a still
   JPEG to the paired Muse. The same Muse can invoke `camera.capture` without a
   per-photo confirmation while this app is in the foreground. A visible capture
@@ -156,7 +237,7 @@ The owner must authorize both agent camera access and app development/deployment
 | `portal.install` | `job_id` | Installs only a passed, unchanged APK for this package |
 | `portal.rollback` | `{}` | Restores the previous APK without clearing app data |
 
-Nova can edit Kotlin/XML/README in her separate worktree; build scripts, the
+The authorized Muse can edit Kotlin/XML/README in a separate worktree; build scripts, the
 host adapter, credentials and unrelated Mac files are outside that scope.
 Builds have no network, host home, signing key, ADB, or Docker socket access.
 First prepare the Docker SDK image and warm its dependency cache from reviewed

@@ -33,6 +33,7 @@ class SubscribeParser(private val diagnostic:(String)->Unit = {}) {
         val text: StringBuilder = StringBuilder(),
         var pendingDone: String? = null, // display_text_ready=false full text, awaiting confirm
         var replyTo: String? = null,
+        var conflictingParent: Boolean = false,
     )
 
     private var lastSeq: Long = -1
@@ -116,7 +117,12 @@ class SubscribeParser(private val diagnostic:(String)->Unit = {}) {
         val slot = slots.getOrPut(id) { Slot(id) }
         val parent = payload.strField("reply_to_message_id")?.takeIf { it.isNotBlank() }
             ?: payload.strField("parent_message_id")?.takeIf { it.isNotBlank() }
-        if (parent != null && parent != id) slot.replyTo = parent
+        if (parent != null && parent != id && !slot.conflictingParent) {
+            if (slot.replyTo != null && slot.replyTo != parent) {
+                slot.replyTo = null
+                slot.conflictingParent = true
+            } else slot.replyTo = parent
+        }
         while (slots.size > 500) slots.remove(slots.keys.first())
         return slot
     }
