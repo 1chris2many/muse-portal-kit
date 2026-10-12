@@ -13,8 +13,8 @@ android {
         applicationId = "com.muse.gadget.portal"
         minSdk = 28 // Meta Portal (Android 9+)
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.3.0"
         testInstrumentationRunner = "com.muse.gadget.portal.PortalSmokeInstrumentation"
     }
 

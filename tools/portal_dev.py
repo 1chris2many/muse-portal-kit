@@ -169,6 +169,8 @@ class PortalDevelopment:
         tools=self.sdk/"build-tools/34.0.0"
         badging=self.run([str(tools/"aapt"),"dump","badging",str(apk)])
         if not re.search(r"^package: name='com\.muse\.gadget\.portal' ",badging):raise ValueError("APK package must be the Portal app")
+        version=re.search(r"^package: .*\bversionCode='(\d+)'",badging)
+        if not version or int(version.group(1))<2:raise ValueError("APK predates Portal display privacy repair; install/rollback refused")
         approved={"RECORD_AUDIO","CAMERA","INTERNET","ACCESS_NETWORK_STATE","BLUETOOTH","BLUETOOTH_ADMIN",
                   "BLUETOOTH_ADVERTISE","BLUETOOTH_CONNECT","FOREGROUND_SERVICE","RECEIVE_BOOT_COMPLETED"}
         permissions=re.findall(r"uses-permission(?:-sdk-\d+)?: name='([^']+)'",badging)

@@ -41,6 +41,11 @@ class PortalDevelopmentTests(unittest.TestCase):
         with patch.object(self.dev,"run",return_value='{"port":12,"token":"invalid"}'):
             with self.assertRaisesRegex(ValueError,"Invalid Portal bridge configuration"):
                 self.dev.camera()
+    def test_pre_privacy_apk_cannot_install_or_rollback(self):
+        with patch.object(self.dev,"run",return_value="package: name='com.muse.gadget.portal' versionCode='1'"):
+            for backup in (True,False):
+                with self.assertRaisesRegex(ValueError,"predates Portal display privacy repair"):
+                    self.dev.install(self.root/"old.apk",backup)
     def test_build_is_offline_and_has_no_host_home_mount(self):
         job="b"*32;(self.dev.state/job/"source").mkdir(parents=True)
         with patch("portal_dev.subprocess.run") as run:

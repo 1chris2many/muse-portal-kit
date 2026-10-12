@@ -235,7 +235,7 @@ The owner must authorize both agent camera access and app development/deployment
 | `portal.build` | `{}` | Asynchronous immutable-snapshot job ID |
 | `portal.status` | Optional `job_id` | Build/test result and bounded log tail |
 | `portal.install` | `job_id` | Installs only a passed, unchanged APK for this package |
-| `portal.rollback` | `{}` | Restores the previous APK without clearing app data |
+| `portal.rollback` | `{}` | Restores the previous privacy-capable APK without clearing app data |
 
 The authorized Muse can edit Kotlin/XML/README in a separate worktree; build scripts, the
 host adapter, credentials and unrelated Mac files are outside that scope.
@@ -245,7 +245,10 @@ source using `tools/portal-build.Dockerfile` and `tools/portal-warm.Dockerfile`.
 New dependencies require a reviewed cache refresh. The host checks package,
 permission scope and artifact hash before signing/installing. Installation can
 restart the app; test the changed behavior afterward. Rollback restores code,
-not an earlier copy of app data. Nothing is automatically published to GitHub.
+not an earlier copy of app data. Install and rollback reject version codes below
+2, which predate the display privacy repair. This version floor is a regression
+guard, not proof of arbitrary source-code safety; review edits before deployment.
+Nothing is automatically published to GitHub.
 
 ## Hardware smoke tests
 
