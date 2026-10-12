@@ -15,6 +15,7 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "0.1.0"
+        testInstrumentationRunner = "com.muse.gadget.portal.PortalSmokeInstrumentation"
     }
 
     buildTypes {
@@ -29,6 +30,7 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+    sourceSets.getByName("androidTest").assets.srcDir(layout.buildDirectory.dir("smoke-assets"))
 }
 
 dependencies {

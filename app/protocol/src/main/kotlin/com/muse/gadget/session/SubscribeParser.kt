@@ -35,6 +35,7 @@ class SubscribeParser(private val diagnostic:(String)->Unit = {}) {
     )
 
     private var lastSeq: Long = -1
+    private val userTexts = LinkedHashMap<String,String>()
     private val slots = LinkedHashMap<String, Slot>()
     private var busy: Boolean = false
 
@@ -50,8 +51,12 @@ class SubscribeParser(private val diagnostic:(String)->Unit = {}) {
         val isUser = root.strField("event") == "message.user"
         if (root.strField("type") != "event") {if(isUser)diagnostic("User row ignored: not event type");return emptyList()}
         val seq = (root.field("seq") as? JsonValue.Num)?.raw?.toLongOrNull() ?: return emptyList()
-        if (seq <= lastSeq) {if(isUser)diagnostic("User row ignored: non-increasing sequence");return emptyList()}
-        lastSeq = seq
+        // Persisted user rows have a separate sequence domain from live deltas.
+        // Deduplicate these by message ID + text, not the live stream watermark.
+        if (!isUser) {
+            if (seq <= lastSeq) return emptyList()
+            lastSeq = seq
+        }
         val name = root.strField("event") ?: return emptyList()
         val payload = root.field("payload") as? JsonValue.Obj ?: return emptyList()
         return when (name) {
@@ -67,7 +72,12 @@ class SubscribeParser(private val diagnostic:(String)->Unit = {}) {
                     diagnostic("User row has no displayable transcript: missingId=${id.isNullOrBlank()}, blank=${text.isBlank()}, placeholder=${text=="[Voice note]"}, fileOnly=${text.startsWith("[file:")}")
                     emptyList()
                 }
-                else listOf(Event.UserTranscript(id, text))
+                else if (userTexts[id] == text) emptyList()
+                else {
+                    userTexts[id]=text
+                    if(userTexts.size>100)userTexts.remove(userTexts.keys.first())
+                    listOf(Event.UserTranscript(id, text))
+                }
             }
             "agent.status" -> onAgentStatus(payload)
             "task.status" -> onTaskStatus(payload)
@@ -94,6 +104,7 @@ class SubscribeParser(private val diagnostic:(String)->Unit = {}) {
     fun reset() {
         lastSeq = -1
         slots.clear()
+        userTexts.clear()
         busy = false
     }
 

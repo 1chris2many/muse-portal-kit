@@ -182,11 +182,13 @@ class MuseConnection(private val store: DeviceStore, private val status: (String
                     controlBytes=controlBytes.copyOfRange(n+4,controlBytes.size)
                     if(obj.optString("id")==registration && !obj.has("method")) {
                         check(!obj.has("error"))
+                        android.util.Log.i("MusePortalState","Muse accepted device registration; camera advertised=${photo!=null}")
                         val req=transport!!.encryptHttpRequest("POST",Identity.CHAT_SUBSCRIBE_PATH,ChatStreams.subscribeBody(),headers=ChatStreams.subscribeHeaders())
                         subscribeId=req.streamId;send(req.frames)
                     }
                     if(obj.optString("event") in listOf("link.unpaired","node.unpaired")) {closed=true;readyChanged(false);socket?.cancel();status("Device unpaired in Muse.");return}
                     if(obj.optString("method")=="link.invoke") {
+                        android.util.Log.i("MusePortalState","Device command received; camera=${obj.optString("command")=="camera.capture"}")
                         val id=obj.optString("id")
                         if(id.isNotBlank() && obj.optString("command")=="camera.capture" && photo!=null) {
                             if(!cameraInvocations.add(id)) {
@@ -197,8 +199,9 @@ class MuseConnection(private val store: DeviceStore, private val status: (String
                             if(cameraInvocations.size>100)cameraInvocations.remove(cameraInvocations.first())
                             val mine=epoch
                             photo.invoke {bytes,error ->dispatch(mine){
+                                android.util.Log.i("MusePortalState","Camera command result; success=${bytes!=null}")
                                 val result=JSONObject().put("method","link.result").put("id",id).put("ok",bytes!=null)
-                                if(bytes!=null)result.put("payload",JSONObject().put("mime_type","image/jpeg")
+                                if(bytes!=null)result.put("payload",JSONObject().put("format","jpeg-base64").put("mime_type","image/jpeg")
                                     .put("data_base64",android.util.Base64.encodeToString(bytes,android.util.Base64.NO_WRAP)))
                                 else result.put("error",error?:"Camera unavailable")
                                 control(result)
