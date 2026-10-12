@@ -3,11 +3,36 @@
 > **Active development fork:** [1chris2many/muse-portal-kit](https://github.com/1chris2many/muse-portal-kit)
 > · [Original project](https://github.com/hanfang/muse-portal-kit)
 
-Turn a retired **Meta Portal** into a foreground, push-to-talk device for **Muse**.
-Hold Talk, speak, and release. Voice notes go to your existing Muse account;
-server transcripts appear on this device. Replies appear only when the server
-explicitly links them to a request from this Portal. Voice-linked replies can use
-an installed offline Android voice. No always-listening microphone or continuous camera stream.
+Bring **Muse** to **Meta Portal** as a fully capable, embedded experience. The goal
+is feature parity with the **Muse Android app**, or as close to parity as the
+Portal hardware and available Muse interfaces allow. The native Android client
+connects to your existing Muse account and runtime, preserving continuity across
+your devices.
+
+## Project goal
+
+The Portal should support the breadth of what you can do with Muse on your phone,
+adapted to its large screen, microphones, speakers and camera:
+
+- **Conversation:** voice and text, visible transcripts, responsive replies,
+  natural speech, and an optional local "Nova" wake word.
+- **Rich content:** photos, generated images, documents, artifacts, widgets and
+  interactive reply options, with useful native rendering and working actions.
+- **Conversation choice:** access to the main conversation and existing Muse
+  threads, with replies delivered to the intended device and conversation.
+- **Camera and access:** owner-authorized photos initiated by either the user
+  or Muse, plus optional owner recognition for private conversation access.
+- **Portal interface:** a polished, touch-friendly client with clear conversation,
+  recording, playback and connection states, accessible controls and privacy settings.
+- **Muse development:** let the existing Muse help improve its Portal client
+  through scoped source access, builds, installation and rollback.
+
+Push-to-talk is the first working interaction and the foundation for the full
+client. Use the Muse Android app as
+the reference when evaluating features; where a direct equivalent is unavailable,
+investigate a supported export or bridge and document the remaining gap.
+
+## Current build
 
 > **Status:** hardware-tested development build, not a production release.
 > Android 9 Portal installation, encrypted account provisioning, direct Wi-Fi
@@ -18,6 +43,13 @@ an installed offline Android voice. No always-listening microphone or continuous
 > an authenticated USB-host fallback has been verified. The original unwired
 > always-listening and BLE skeleton prototypes are retained in `legacy/android/`,
 > outside this app's build and lint source sets.
+
+Today, hold Talk, speak, and release. Voice notes go to your existing Muse account;
+server transcripts appear on this device. Replies appear only when the server
+explicitly links them to a request from this Portal. Voice-linked replies can use
+an installed offline Android voice. The current build has no always-listening
+microphone or continuous camera stream. The goals above describe the intended
+product; the sections below distinguish implemented behavior from planned work.
 
 ## Architecture
 
@@ -86,6 +118,10 @@ contains baseline compatibility fixes and [PR 2](https://github.com/hanfang/muse
 contains the app and development workflow. PR 2 currently includes PR 1's commits.
 
 - App entry point: `app/app/src/main/kotlin/com/muse/gadget/portal/ui/PortalActivity.kt`.
+- Front end: native Kotlin Android Views, including `DeviceStatusView.kt` in the
+  same directory. Design for the app-parity goal above; the legacy screens are
+  not the active client. Keep frontend changes separate from transport changes
+  where possible so multiple contributors can work without colliding.
 - Transport: `MuseConnection.kt` in the parent package; protocol and pure tests
   are in `app/protocol`. `PortalReplyRouter` isolates display and speech origins.
 - Hardware: `PortalCamera.kt`, `LocalPortalBridge.kt`; optional host adapter:
@@ -108,14 +144,23 @@ runtime, native command invocation in contexts without gadget tools, and broader
 device testing. Android 9 first-generation Portal is the tested hardware; other
 Android devices and later Portal variants are not claimed compatible.
 
-## UI reuse from Muse Gadgets
+## Roadmap toward Android app parity
 
-Owner-requested roadmap (backlog, not enabled):
+Feature work is tracked in:
 [local wake word](https://github.com/1chris2many/muse-portal-kit/issues/1),
 [rich content](https://github.com/1chris2many/muse-portal-kit/issues/2),
 [voice/expressive speech](https://github.com/1chris2many/muse-portal-kit/issues/3),
 [owner recognition](https://github.com/1chris2many/muse-portal-kit/issues/4), and
 [main conversation/thread selection](https://github.com/1chris2many/muse-portal-kit/issues/5).
+
+Reliable [reply delivery](https://github.com/1chris2many/muse-portal-kit/issues/6)
+and [Muse command invocation](https://github.com/1chris2many/muse-portal-kit/issues/7)
+underpin those features. Track runtime capability, client rendering and verified
+Portal behavior separately: a feature visible in the phone app may need a new
+delivery or rendering path here. Open issues and proposed implementations do not
+mean a feature is enabled in the current build.
+
+## UI reuse from Muse Gadgets
 
 The official ESP32 UI uses C/LVGL, not Android Views. Its
 [`muse_ui.c`](https://github.com/facebookincubator/muse-gadget-sdk/blob/main/esp32/components/muse/muse_ui.c),
@@ -218,6 +263,9 @@ failure with the combined CoreBluetooth name/service advertisement.
   per-photo confirmation while this app is in the foreground. A visible capture
   indicator and thumbnail show camera activity. The physical privacy switch is
   never bypassed. Grant camera permission only if you want both forms of access.
+- The same Muse can ask the Portal to show one image with `display.draw_url`
+  (see **Rich content from Muse**). Each call needs approval in the Muse app;
+  the image appears as a card in the conversation and clears with it.
 - Camera results are bounded to 128 KiB, retained only in memory, and returned
   over the existing encrypted link. Concurrent captures are rejected; repeated
   request IDs do not take another photo. Camera closes on completion, failure,
@@ -249,6 +297,26 @@ Checked against the official SDK on 2026-10-11 for
   issue 14 is updated. A native stream would plug into `voiceReply` in
   `MuseConnection`, still behind `PortalReplyRouter`; nothing else would
   authorize playback.
+
+## Rich content from Muse
+
+Surveyed against the official SDK on 2026-10-11 for
+[issue 2](https://github.com/1chris2many/muse-portal-kit/issues/2). This is what
+a gadget can receive from Muse today; none of it is Muse mobile-app parity, and
+nothing below imports shared history.
+
+| Path | Status on this Portal |
+|---|---|
+| `display.draw_url` (command Muse invokes with an image URL; the official firmware's name, parameter and result shape) | **Supported, bounded.** https only, public host names only, and the resolver vets every address before the connection uses it: private, loopback, link-local, carrier-grade NAT, multicast, documentation and IPv4-in-IPv6 forms are refused, and a mixed answer is refused whole, for redirect targets too. No cookies or credentials, up to 3 same-scheme redirects, 2 MiB, JPEG/PNG/WebP by magic bytes, source up to 4096 px a side, shown at up to 1280 px, one 30 s budget across redirects and decoding, one at a time, foreground only. Result reports format, size, scale, bytes and time, never the URL. Needs the Muse app's per-call approval and the same runtime invocation support as `camera.capture` (issue 7). |
+| `display.show_animation` (command) | **Supported.** Clears images shown by `display.draw_url`. Images also clear with the Clear button, backgrounding, reconnect and the two-minute privacy timer. Each of those revokes any image still downloading: it is cancelled where possible, rechecked on the UI thread before display, and reported to Muse as `cancelled`, never as shown. |
+| `delta.presentation` on `/chat/subscribe` (images, audio, video, forms attached to a reply; undocumented, shape per [SDK issue 186](https://github.com/facebookincubator/muse-gadget-sdk/issues/186)) | **Announced in words only.** A gadget's token cannot read the files (`path not allowed for device token`), so the Portal shows "Muse sent an image with this reply…" under the same parent-link gate as text, never speaks it, never fetches, and logs the event's field names only. Forms (`data.html`) are never rendered. |
+| Widgets, artifacts, app-style cards | **No API.** The gadget SDK has no such payload; none is claimed or rendered. |
+| Gadget → Muse images | Already supported: **Take & share photo** sends a JPEG item on `/chat/stream`. |
+
+What never happens: no WebView or script execution, no local files, camera or
+host access handed to remote content, no fetch of `sandbox://` paths, no http://
+or private-network fetches on Muse's behalf. Re-check SDK issue 186 for file
+access or inline media and issue 108 for approval-free drawing.
 
 ## Muse development and the command-routing fallback
 

@@ -2,6 +2,8 @@ package com.muse.gadget.portal
 
 import com.muse.gadget.api.MuseAccountApi
 import com.muse.gadget.api.VmInfo
+import com.muse.gadget.display.DisplayCommands
+import com.muse.gadget.display.DisplayImagePolicy
 import com.muse.gadget.identity.Identity
 import com.muse.gadget.noise.*
 import com.muse.gadget.session.ChatStreams
@@ -25,7 +27,11 @@ class MuseConnection(private val store: DeviceStore, private val status: (String
     private val reply: (String)->Unit, private val readyChanged: (Boolean)->Unit,
     private val transcript: (String,String)->Unit = {_,_->},
     private val photo: (((ByteArray?,String?)->Unit)->Unit)? = null,
-    private val voiceReply: (String)->Unit = {}) {
+    private val voiceReply: (String)->Unit = {},
+    /** display.draw_url: shows one policy-checked https image; answers (payload, error). */
+    private val image: ((String,(JSONObject?,JSONObject?)->Unit)->Unit)? = null,
+    /** display.show_animation: clears images shown by display.draw_url. */
+    private val clearImage: (()->Unit)? = null) {
     private val http=OkHttpClient.Builder().connectTimeout(15,TimeUnit.SECONDS)
         .readTimeout(30,TimeUnit.SECONDS).pingInterval(20,TimeUnit.SECONDS)
         .followRedirects(false).followSslRedirects(false).build()
@@ -40,7 +46,7 @@ class MuseConnection(private val store: DeviceStore, private val status: (String
     private var lines=ByteArray(0)
     private fun newParser()=SubscribeParser{android.util.Log.i("MusePortalState",it)}
     private var parser=newParser()
-    private val cameraInvocations=LinkedHashSet<String>()
+    private val invocations=LinkedHashSet<String>()
     private val sends=mutableSetOf<Long>()
     private val voiceSends=mutableMapOf<Long,String>()
     private val ackBodies=mutableMapOf<Long,ByteArray>()
@@ -137,6 +143,13 @@ class MuseConnection(private val store: DeviceStore, private val status: (String
                 if(photo!=null)put("camera.capture",JSONObject()
                     .put("description","Take one RGB still photo on this Portal now. Owner has enabled capture without confirmation. Requires app foreground and camera permission; physical shutter applies. Returns JPEG data_base64 (max 128 KiB). No video or saved files.")
                     .put("required",JSONObject()).put("optional",JSONObject()).put("timeout_ms",15000))
+                if(image!=null){
+                    put(DisplayCommands.DRAW_URL,JSONObject().put("description",DisplayCommands.DRAW_URL_DESCRIPTION)
+                        .put("required",JSONObject().put("url",JSONObject().put("type","string").put("description",DisplayCommands.DRAW_URL_PARAM)))
+                        .put("optional",JSONObject()).put("timeout_ms",DisplayCommands.DRAW_URL_TIMEOUT_MS))
+                    put(DisplayCommands.CLEAR,JSONObject().put("description",DisplayCommands.CLEAR_DESCRIPTION)
+                        .put("required",JSONObject()).put("optional",JSONObject()))
+                }
             })
         control(JSONObject().put("type","req").put("id",registration).put("method","link.register").put("params",params))
     }
@@ -187,21 +200,40 @@ class MuseConnection(private val store: DeviceStore, private val status: (String
                     controlBytes=controlBytes.copyOfRange(n+4,controlBytes.size)
                     if(obj.optString("id")==registration && !obj.has("method")) {
                         check(!obj.has("error"))
-                        android.util.Log.i("MusePortalState","Muse accepted device registration; camera advertised=${photo!=null}")
+                        android.util.Log.i("MusePortalState","Muse accepted device registration; camera advertised=${photo!=null}; display advertised=${image!=null}")
                         val req=transport!!.encryptHttpRequest("POST",Identity.CHAT_SUBSCRIBE_PATH,ChatStreams.subscribeBody(),headers=ChatStreams.subscribeHeaders())
                         subscribeId=req.streamId;send(req.frames)
                     }
                     if(obj.optString("event") in listOf("link.unpaired","node.unpaired")) {closed=true;readyChanged(false);socket?.cancel();status("Device unpaired in Muse.");return}
                     if(obj.optString("method")=="link.invoke") {
-                        android.util.Log.i("MusePortalState","Device command received; camera=${obj.optString("command")=="camera.capture"}")
+                        val command=obj.optString("command")
+                        android.util.Log.i("MusePortalState","Device command received; camera=${command=="camera.capture"}; display=${command.startsWith("display.")}")
                         val id=obj.optString("id")
-                        if(id.isNotBlank() && obj.optString("command")=="camera.capture" && photo!=null) {
-                            if(!cameraInvocations.add(id)) {
-                                control(JSONObject().put("method","link.result").put("id",id).put("ok",false)
-                                    .put("error","This capture request was already processed; request a new photo with a new ID."))
-                                continue
+                        if(id.isNotBlank() && !invocations.add(id)) {
+                            control(JSONObject().put("method","link.result").put("id",id).put("ok",false)
+                                .put("error","This request was already processed; send a new one with a new ID."))
+                            continue
+                        }
+                        if(invocations.size>100)invocations.remove(invocations.first())
+                        if(id.isNotBlank() && command==DisplayCommands.DRAW_URL && image!=null) {
+                            // The URL is policy-checked here and never logged: it may carry a private token.
+                            when(val check=DisplayImagePolicy.checkUrl(obj.optJSONObject("params")?.optString("url"))) {
+                                is DisplayImagePolicy.Check.Rejected -> control(JSONObject().put("method","link.result").put("id",id).put("ok",false)
+                                    .put("error",JSONObject().put("code",check.code).put("message",check.message)))
+                                is DisplayImagePolicy.Check.Ok -> {
+                                    val mine=epoch
+                                    image.invoke(check.url){payload,error ->dispatch(mine){
+                                        android.util.Log.i("MusePortalState","Display command result; success=${payload!=null}; code=${error?.optString("code")}")
+                                        val result=JSONObject().put("method","link.result").put("id",id).put("ok",payload!=null)
+                                        if(payload!=null)result.put("payload",payload) else result.put("error",error?:JSONObject().put("code","display_failed").put("message","Image could not be shown."))
+                                        control(result)
+                                    }}
+                                }
                             }
-                            if(cameraInvocations.size>100)cameraInvocations.remove(cameraInvocations.first())
+                        } else if(id.isNotBlank() && command==DisplayCommands.CLEAR && clearImage!=null) {
+                            clearImage.invoke()
+                            control(JSONObject().put("method","link.result").put("id",id).put("ok",true).put("payload",JSONObject()))
+                        } else if(id.isNotBlank() && command=="camera.capture" && photo!=null) {
                             val mine=epoch
                             photo.invoke {bytes,error ->dispatch(mine){
                                 android.util.Log.i("MusePortalState","Camera command result; success=${bytes!=null}")
@@ -224,6 +256,12 @@ class MuseConnection(private val store: DeviceStore, private val status: (String
                     // Schema-only diagnostics: never log values or conversation content.
                     try {
                         val event=JSONObject(line)
+                        if(event.optString("event")=="delta.presentation") {
+                            val payload=event.optJSONObject("payload")
+                            val keys=payload?.keys()?.asSequence()?.filter{it.matches(Regex("[a-z_]{1,40}"))}?.sorted()?.toList()
+                            val dataKeys=payload?.optJSONObject("data")?.keys()?.asSequence()?.filter{it.matches(Regex("[a-z_]{1,40}"))}?.sorted()?.toList()
+                            android.util.Log.i("MusePortalState","Presentation event schema: $keys; data=$dataKeys")
+                        }
                         if(event.optString("event")=="message.user") {
                             val payload=event.optJSONObject("payload")
                             val keys=payload?.keys()?.asSequence()?.filter{it.matches(Regex("[a-z_]{1,40}"))}?.sorted()?.toList()
@@ -250,6 +288,11 @@ class MuseConnection(private val store: DeviceStore, private val status: (String
                         if(event is SubscribeParser.Event.MessageDone) {
                             val delivery=replies.receive(event)
                             android.util.Log.i("MusePortalState","Reply origin gate: parentPresent=${event.replyTo!=null}, display=${delivery.display}, speak=${delivery.speak}")
+                            deliverReply(delivery)
+                        }
+                        if(event is SubscribeParser.Event.Presentation) {
+                            val delivery=replies.receivePresentation(event)
+                            android.util.Log.i("MusePortalState","Presentation origin gate: parentPresent=${event.replyTo!=null}, display=${delivery.display}")
                             deliverReply(delivery)
                         }
                     }

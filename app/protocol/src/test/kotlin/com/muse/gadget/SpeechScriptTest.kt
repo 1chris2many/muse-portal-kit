@@ -68,6 +68,31 @@ class SpeechScriptTest {
         assertEquals("*unpaired star", SpeechScript.plain("*unpaired star"))
     }
 
+    @Test fun `multiple products cannot be mistaken for paired emphasis`() {
+        val examples = mapOf(
+            "2*3*4 = 24" to "2 times 3 times 4 = 24",
+            "2*3 and 4*5" to "2 times 3 and 4 times 5",
+            "2 * 3 * 4" to "2 times 3 times 4",
+            "2.5*3*4" to "2.5 times 3 times 4",
+            "(2+3)*(4+5)*6" to "(2+3) times (4+5) times 6",
+            "a*b*c" to "a*b*c",
+            "a*b and c*d" to "a*b and c*d",
+        )
+        for ((source, expected) in examples) {
+            assertEquals(expected, SpeechScript.plain(source), source)
+            assertEquals(expected, SpeechScript.plain("`$source`"), "inline: $source")
+            assertEquals(expected, SpeechScript.plain("```text\n$source\n```"), "fenced: $source")
+        }
+    }
+
+    @Test fun `arithmetic and real emphasis coexist`() {
+        assertEquals("Answer: 2 times 3 times 4 = 24",
+            SpeechScript.plain("**Answer:** 2*3*4 = *24*"))
+        assertEquals("2 times 3 times 4", SpeechScript.plain("**2*3*4**"))
+        assertEquals("bold italic and bold and italic",
+            SpeechScript.plain("***bold italic*** and **bold** and *italic*"))
+    }
+
     @Test fun `code fences keep their content without the fence`() {
         assertEquals("Run this:\nmake test\nthen rest.",
             SpeechScript.plain("Run this:\n```sh\nmake test\n```\nthen rest."))

@@ -149,8 +149,10 @@ object SpeechScript {
     private fun inline(line: String): String {
         // Paired emphasis loses its marks; a star between operands is arithmetic and is
         // read as "times"; any other lone star stays literal rather than fusing its neighbours.
-        var s = STAR_EMPHASIS.replace(line) { it.groupValues[1] }
-        s = TIMES.replace(s, " times ")
+        // Classify numeric multiplication before matching pairs of emphasis marks:
+        // otherwise 2*3*4 looks like italic 3 and silently becomes 234.
+        var s = TIMES.replace(line, " times ")
+        s = STAR_EMPHASIS.replace(s) { it.groupValues[2] }
         s = s.replace("`", "").replace("~~", "")
         s = UNDERSCORE_EMPHASIS.replace(s) { it.groupValues[1] }
         s = symbols(s)
@@ -268,7 +270,9 @@ object SpeechScript {
     private val QUOTE = Regex("^(>\\s?)+")
     private val BULLET = Regex("^[-+*•]\\s+")
     private val NUMBERED = Regex("^\\d{1,3}[.)]\\s+")
-    private val STAR_EMPHASIS = Regex("\\*{1,3}(\\S(?:[^*\\n]*?\\S)?)\\*{1,3}")
+    // Only standalone, matching delimiter runs are treated as emphasis. In-word
+    // stars (a*b*c, for example) stay literal instead of losing their operators.
+    private val STAR_EMPHASIS = Regex("(?<![\\w*])(\\*{1,3})(\\S(?:[^*\\n]*?\\S)?)\\1(?![\\w*])")
     private val TIMES = Regex("(?<=[\\d)])\\s*\\*\\s*(?=[\\d(])")
     private val NUMERIC_ENTITY = Regex("&#(?:[xX]([0-9A-Fa-f]{1,6})|([0-9]{1,7}));")
     private val NAMED_ENTITIES = listOf(
