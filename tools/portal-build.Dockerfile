@@ -9,7 +9,7 @@ RUN mkdir -p /opt/android-sdk/cmdline-tools && \
     mv /opt/android-sdk/cmdline-tools/cmdline-tools /opt/android-sdk/cmdline-tools/latest && \
     rm /tmp/android-tools.zip
 RUN yes | /opt/android-sdk/cmdline-tools/latest/bin/sdkmanager --licenses >/dev/null && \
-    /opt/android-sdk/cmdline-tools/latest/bin/sdkmanager 'platforms;android-35' 'build-tools;34.0.0' && \
+    /opt/android-sdk/cmdline-tools/latest/bin/sdkmanager 'platforms;android-35' 'build-tools;34.0.0' 'platform-tools' && \
     chmod -R a+rX /opt/android-sdk
 USER gradle
 WORKDIR /workspace

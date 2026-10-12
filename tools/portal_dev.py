@@ -14,11 +14,12 @@ import sys
 import threading
 import time
 import uuid
+from urllib.request import Request, urlopen
 
 
 class PortalDevelopment:
     ACTIONS = ("portal.files", "portal.read", "portal.write", "portal.diff",
-               "portal.build", "portal.status", "portal.install", "portal.rollback")
+               "portal.build", "portal.status", "portal.install", "portal.rollback", "portal.camera")
 
     def __init__(self, workspace, state, image, adb, serial, sdk, keystore):
         self.workspace=Path(workspace).resolve()
@@ -72,8 +73,9 @@ class PortalDevelopment:
         if action not in self.ACTIONS or not isinstance(args,dict):raise ValueError("Unknown Portal action")
         allowed={"portal.files":set(),"portal.read":{"path"},"portal.write":{"path","content","expected_sha256"},
                  "portal.diff":set(),"portal.build":set(),"portal.status":{"job_id"},
-                 "portal.install":{"job_id"},"portal.rollback":set()}
+                 "portal.install":{"job_id"},"portal.rollback":set(),"portal.camera":set()}
         if set(args)-allowed[action]:raise ValueError("Unexpected arguments")
+        if action=="portal.camera":return self.camera()
         if action=="portal.files":
             names=self.run(["/usr/bin/git","ls-files","--cached","--others","--exclude-standard"],cwd=self.workspace).splitlines()
             files=[]
@@ -109,6 +111,8 @@ class PortalDevelopment:
                     if r.get("status")=="building":
                         worker=self.workers.get(p.parent.name)
                         if worker and worker.is_alive():raise ValueError("A Portal build is already running")
+                        if re.fullmatch(r"[a-f0-9]{32}",p.parent.name):
+                            subprocess.run(["/usr/local/bin/docker","rm","-f","portal-build-"+p.parent.name],capture_output=True,timeout=20)
                         self.record(p.parent.name,{"job_id":p.parent.name,"status":"failed","error":"Build worker interrupted; start a new build."})
                 job=uuid.uuid4().hex;root=self.state/job;root.mkdir(mode=0o700)
                 source=root/"source";source.mkdir()
@@ -142,8 +146,9 @@ class PortalDevelopment:
 
     def build(self,job):
         root=self.state/job
+        name="portal-build-"+job
         try:
-            argv=["/usr/local/bin/docker","run","--rm","--platform","linux/amd64",
+            argv=["/usr/local/bin/docker","run","--rm","--name",name,"--platform","linux/amd64",
                   "--network","none","--cap-drop=ALL","--security-opt=no-new-privileges",
                   "--pids-limit","512","--memory","4g","--cpus","4",
                   "--mount",f"type=bind,src={root/'source'},dst=/workspace",
@@ -156,7 +161,9 @@ class PortalDevelopment:
             if apk.is_symlink() or not apk.resolve().is_relative_to(root/"source") or apk.stat().st_size>80*1024*1024:raise ValueError("Invalid APK artifact")
             shutil.copyfile(apk,root/"portal.apk")
             self.record(job,{"job_id":job,"status":"passed","sha256":self.digest((root/"portal.apk").read_bytes()),"finished_at":time.time()})
-        except Exception as e:self.record(job,{"job_id":job,"status":"failed","error":str(e),"finished_at":time.time()})
+        except Exception as e:
+            subprocess.run(["/usr/local/bin/docker","rm","-f",name],capture_output=True,timeout=20)
+            self.record(job,{"job_id":job,"status":"failed","error":str(e),"finished_at":time.time()})
 
     def install(self,apk,backup):
         tools=self.sdk/"build-tools/34.0.0"
@@ -181,3 +188,20 @@ class PortalDevelopment:
         self.run(adb+["shell","am","start","-n","com.muse.gadget.portal/.ui.PortalActivity"])
         return {"installed":True,"package":"com.muse.gadget.portal","rollback_available":(self.state/"previous.apk").exists(),
                 "verification":"APK installed and activity started; confirm reconnect and changed behavior on the device."}
+
+    def camera(self):
+        adb=[self.adb,"-s",self.serial]
+        # Consume the app-private credential internally, never return or log it.
+        config=json.loads(self.run(adb+["shell","run-as","com.muse.gadget.portal","cat","no_backup/portal-bridge.json"]))
+        port=config.get("port");token=config.get("token")
+        if type(port)!=int or not 1024<=port<=65535 or not isinstance(token,str) or not re.fullmatch("[a-f0-9]{64}",token):raise ValueError("Invalid Portal bridge configuration")
+        forward=self.run(adb+["forward","tcp:0",f"tcp:{port}"]).strip()
+        if not forward.isdigit():raise ValueError("Could not establish USB camera forwarding")
+        try:
+            req=Request(f"http://127.0.0.1:{forward}/camera",data=b"",headers={"Authorization":"Bearer "+token})
+            with urlopen(req,timeout=15) as response:
+                body=response.read(200000)
+                result=json.loads(body)
+                if not result.get("ok"):raise ValueError("Portal camera capture failed")
+                return result
+        finally:self.run(adb+["forward","--remove",f"tcp:{forward}"])

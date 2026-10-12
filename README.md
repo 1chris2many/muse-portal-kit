@@ -119,6 +119,56 @@ failure with the combined CoreBluetooth name/service advertisement.
 - This is a foreground prototype. Background wake words, arbitrary remote
   commands, OTA, and automatic startup at boot are not enabled.
 
+## Muse development and the command-routing fallback
+
+Some Muse contexts do not expose gadget invocation even after a successful
+registration ([SDK issue 154](https://github.com/facebookincubator/muse-gadget-sdk/issues/154)).
+This app keeps its native `camera.capture` command, and also provides an optional
+USB developer bridge: a loopback-only HTTP server with a random bearer stored
+in app-private no-backup storage. It exposes only status and single-photo capture.
+The trusted host adapter consumes that bearer through `adb run-as`, forwards a
+temporary localhost port and removes it after the request. No key is returned
+to the Muse or logged. Voice and chat still connect directly over Wi-Fi.
+
+`tools/portal_dev.py` can be mounted in an **existing authenticated owner bridge**.
+Never expose its actions on an unauthenticated/public endpoint. Configure one
+source worktree, one device serial, one SDK/signing key and one builder image.
+The owner must authorize both agent camera access and app development/deployment.
+
+| Action | Arguments | Result |
+|---|---|---|
+| `portal.camera` | `{}` | JPEG in `data_base64`; `format: jpeg-base64` |
+| `portal.files` | `{}` | Editable source paths |
+| `portal.read` | `path` | UTF-8 source and SHA-256 |
+| `portal.write` | `path`, `content`, `expected_sha256` | Optimistic update; use null hash only for a new file |
+| `portal.diff` | `{}` | Tracked source differences |
+| `portal.build` | `{}` | Asynchronous immutable-snapshot job ID |
+| `portal.status` | Optional `job_id` | Build/test result and bounded log tail |
+| `portal.install` | `job_id` | Installs only a passed, unchanged APK for this package |
+| `portal.rollback` | `{}` | Restores the previous APK without clearing app data |
+
+Nova can edit Kotlin/XML/README in her separate worktree; build scripts, the
+host adapter, credentials and unrelated Mac files are outside that scope.
+Builds have no network, host home, signing key, ADB, or Docker socket access.
+First prepare the Docker SDK image and warm its dependency cache from reviewed
+source using `tools/portal-build.Dockerfile` and `tools/portal-warm.Dockerfile`.
+New dependencies require a reviewed cache refresh. The host checks package,
+permission scope and artifact hash before signing/installing. Installation can
+restart the app; test the changed behavior afterward. Rollback restores code,
+not an earlier copy of app data. Nothing is automatically published to GitHub.
+
+## Hardware smoke tests
+
+The separate Android test APK contains `PortalSmokeInstrumentation`; it is not
+included in the production app. With explicit developer authorization,
+`-e camera true` captures one JPEG without storing/sharing it, and `-e voice true`
+sends a generated, clearly labeled synthetic voice fixture from the test assets
+and checks that the server transcription reaches the message view. Generate
+`app/app/build/smoke-assets/transcription-test.wav` as mono 16 kHz PCM before
+building that test APK. The optional `probe` mode sends a labeled integration
+request; use an established authenticated coordination channel instead if the
+Muse cannot authenticate requests arriving through device chat.
+
 ## Security policy — tokens and secrets
 
 **No hardcoded tokens, keys, or personal data — ever.** This is enforced by code

@@ -52,6 +52,7 @@ class PortalActivity: Activity() {
     private val camera=PortalCamera()
     private lateinit var cameraState:TextView
     private var cameraBusy=false
+    private var localBridge:LocalPortalBridge?=null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -105,6 +106,7 @@ class PortalActivity: Activity() {
             voiceBubbles[id]?.text=text
             android.util.Log.i("MusePortalState","Voice transcript received and displayed.")
         }}, {done ->runOnUiThread{takePhoto("Muse",done)}})
+        localBridge=LocalPortalBridge(this){done ->runOnUiThread{takePhoto("Muse",done)}}
         tts=TextToSpeech(this){result ->runOnUiThread{
             if(result==TextToSpeech.SUCCESS){
                 tts?.setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
@@ -279,5 +281,5 @@ class PortalActivity: Activity() {
         }.also{it.start()}
     }
     override fun onStop(){foreground=false;cancelled=true;recording=false;camera.cancel();tts?.stop();super.onStop()}
-    override fun onDestroy(){pairing?.stop();connection.close();tts?.shutdown();super.onDestroy()}
+    override fun onDestroy(){localBridge?.close();pairing?.stop();connection.close();tts?.shutdown();super.onDestroy()}
 }

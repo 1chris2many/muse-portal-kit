@@ -37,5 +37,20 @@ class PortalDevelopmentTests(unittest.TestCase):
         (self.dev.state/job/"portal.apk").write_bytes(b"changed")
         self.dev.record(job,{"status":"passed","sha256":"wrong"})
         with self.assertRaises(ValueError):self.dev.dispatch("portal.install",{"job_id":job})
+    def test_camera_config_not_returned(self):
+        with patch.object(self.dev,"run",return_value='{"port":12,"token":"invalid"}'):
+            with self.assertRaisesRegex(ValueError,"Invalid Portal bridge configuration"):
+                self.dev.camera()
+    def test_build_is_offline_and_has_no_host_home_mount(self):
+        job="b"*32;(self.dev.state/job/"source").mkdir(parents=True)
+        with patch("portal_dev.subprocess.run") as run:
+            run.return_value.returncode=1
+            self.dev.build(job)
+            argv=run.call_args_list[0].args[0]
+            self.assertIn("--network",argv)
+            self.assertEqual(argv[argv.index("--network")+1],"none")
+            self.assertIn("--cap-drop=ALL",argv)
+            self.assertNotIn("/var/run/docker.sock"," ".join(argv))
+            self.assertNotIn("unused-keystore"," ".join(argv))
 
 if __name__=="__main__":unittest.main()

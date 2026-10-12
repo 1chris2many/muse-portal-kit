@@ -39,6 +39,17 @@ class PortalSmokeInstrumentation:Instrumentation() {
                 if(options.getString("probe")=="true") {
                     connection.sendText("[Codex Portal integration test, not Chris speaking.] The existing Muse Portal has re-registered camera.capture. Please refresh/discover its available gadget commands and invoke camera.capture once now. Chris explicitly authorized you to take still photos without confirmation. If unavailable, please report the exact tool/discovery error to Codex via Commons, not just a general inability. No private image needs posting to Commons; success/failure metadata is enough.")
                     Thread.sleep(45000)
+                    runOnMainSync {
+                        val field=PortalActivity::class.java.getDeclaredField("transcript").apply{isAccessible=true}
+                        val list=field.get(activity) as android.widget.LinearLayout
+                        for(i in 0 until list.childCount){
+                            val card=list.getChildAt(i) as? android.widget.LinearLayout?:continue
+                            val who=card.getChildAt(0) as? TextView?:continue
+                            val text=card.getChildAt(1) as? TextView?:continue
+                            if(who.text.toString()=="MUSE")report.putString("diagnostic_reply",text.text.toString().take(1600)
+                                .replace(Regex("(?:mgst_|sk-|ghp_)[A-Za-z0-9_-]{16,}"),"[redacted]"))
+                        }
+                    }
                     report.putString("probe","request sent; inspect command receipt logs")
                     report.putString("result","PASS")
                     finish(Activity.RESULT_OK,report);return
