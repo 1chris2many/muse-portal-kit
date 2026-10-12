@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "status": "awaiting_existing_muse_capability_review",
+  "scope": "Android Muse features relevant to the Portal backlog; not a parity promise",
+  "evidence_rules": {
+    "runtime_reported": "The existing Muse reports access; delivery/export still needs verification",
+    "source_verified": "A specific source implements this capability on its documented platform",
+    "portal_verified": "Implemented and tested on this Portal; distinguish local tests from live acceptance",
+    "unknown": "Asked, not established; do not claim this is available or unavailable"
+  },
+  "features": [
+    {"id":"generated-images","existing_issue":2,"runtime":"unknown","android_client":"unknown","export":"unknown","portal":"not_implemented","source_evidence":"Official ESP32 display.draw_url displays baseline JPEG or raw RGB565; not yet an Android renderer or a verified runtime invocation path."},
+    {"id":"photos-and-image-attachments","existing_issue":2,"runtime":"unknown","android_client":"unknown","export":"unknown","portal":"local_camera_capture_and_preview_exist_not_remote_image_display"},
+    {"id":"documents-and-file-downloads","existing_issue":2,"runtime":"unknown","android_client":"unknown","export":"unknown","portal":"not_implemented"},
+    {"id":"html-artifacts-and-apps","existing_issue":2,"runtime":"unknown","android_client":"unknown","export":"unknown","portal":"not_implemented","design_constraint":"An isolated viewer is required; no privileged JavaScript bridge or arbitrary local-file access."},
+    {"id":"widgets-and-action-callbacks","existing_issue":2,"runtime":"unknown","android_client":"unknown","export":"unknown","portal":"not_implemented","design_constraint":"User actions must bind to fixed server-side actions; do not accept arbitrary executable callbacks."},
+    {"id":"live-updates-and-progress","existing_issue":2,"runtime":"unknown","android_client":"unknown","export":"unknown","portal":"shared_busy_events_parsed_no_targeted_rich_update_renderer"},
+    {"id":"native-voice-and-audio","existing_issue":3,"runtime":"unknown","android_client":"unknown","export":"unknown","portal":"local_android_tts_only","source_evidence":"Official ESP32 chat session uses a developer-supplied TTS hook; native Muse audio export remains unverified."},
+    {"id":"ssml-and-speech-controls","existing_issue":3,"runtime":"unknown","android_client":"unknown","export":"unknown","portal":"no_verified_native_muse_ssml_contract"},
+    {"id":"video","existing_issue":2,"runtime":"unknown","android_client":"unknown","export":"unknown","portal":"not_implemented"},
+    {"id":"main-conversation-and-threads","existing_issue":5,"runtime":"unknown","android_client":"unknown","export":"unknown","portal":"current_main_conversation_only","source_evidence":"Kotlin text request builder accepts session_id, but app does not yet select or subscribe to a chosen thread."},
+    {"id":"notifications-and-proactive-cards","existing_issue":2,"runtime":"unknown","android_client":"unknown","export":"unknown","portal":"not_implemented","design_constraint":"Separate opt-in visual route; never grants audio permission or imports private history."},
+    {"id":"wake-word","existing_issue":1,"runtime":"unknown","android_client":"unknown","export":"not_applicable","portal":"push_to_talk_only"},
+    {"id":"owner-recognition","existing_issue":4,"runtime":"unknown","android_client":"unknown","export":"unknown","portal":"not_implemented","design_constraint":"A Portal microphone event does not identify the speaker; do not silently collect biometric samples."},
+    {"id":"gadget-native-commands","existing_issue":7,"runtime":"reported_unavailable_in_existing_context","android_client":"not_the_same_as_runtime_tool_access","export":"authenticated_scoped_host_bridge_available","portal":"camera_capture_registered_with_working_usb_fallback"}
+  ],
+  "required_response_fields": ["feature", "user_visible_behavior", "tool_or_action", "payload_representation", "export_method", "callbacks_or_updates", "authentication_or_expiry", "limits", "evidence_strength"],
+  "implementation_policy": "This inventory scopes backlog items. It does not activate microphones, biometrics, new providers, permissions, rendering, or a replacement Muse."
+}
