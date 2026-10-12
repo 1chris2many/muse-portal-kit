@@ -265,6 +265,7 @@ class PortalDashboard(context: Context) : FrameLayout(context) {
     val sendButton: PortalActionButton
     val talkButton: PortalTalkButton
     val settingsButton: PortalActionButton
+    val wakeButton: PortalActionButton
     val clearButton: PortalActionButton
     val stopAudioButton: PortalActionButton
     val cameraButton: PortalActionButton
@@ -298,6 +299,10 @@ class PortalDashboard(context: Context) : FrameLayout(context) {
         header.addView(brand, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         statusChip = PortalStatusChip(context)
         header.addView(statusChip)
+        wakeButton = PortalActionButton(context, "Wake off", PortalActionTone.QUIET)
+        header.addView(wakeButton, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, context.dp(48)).apply {
+            leftMargin = context.dp(6)
+        })
         settingsButton = PortalActionButton(context, "Settings", PortalActionTone.QUIET)
         header.addView(settingsButton, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, context.dp(48)).apply {
             leftMargin = context.dp(6)

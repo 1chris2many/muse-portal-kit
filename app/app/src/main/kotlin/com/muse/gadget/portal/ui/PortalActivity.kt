@@ -29,6 +29,9 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import com.muse.gadget.audio.SpeechScript
+import com.muse.gadget.audio.CaptureGeneration
+import com.muse.gadget.audio.WakeSessionPolicy
+import com.muse.gadget.audio.WakeUtteranceEndpoint
 import com.muse.gadget.audio.VoiceNoteEncoder
 import com.muse.gadget.audio.isEnglishVoiceLanguage
 import com.muse.gadget.portal.DeviceStore
@@ -36,12 +39,13 @@ import com.muse.gadget.portal.LocalPortalBridge
 import com.muse.gadget.portal.MuseConnection
 import com.muse.gadget.portal.PortalCamera
 import com.muse.gadget.portal.PortalImageFetcher
+import com.muse.gadget.portal.wake.VoskWakeWordDetector
 import com.muse.gadget.portal.ble.NativePairingPeripheral
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.util.Locale
 
-/** Foreground, explicit push-to-talk only. No conversation text is persisted locally. */
+/** Foreground voice input: push-to-talk, or session-only opt-in local wake. No history is persisted. */
 class PortalActivity : Activity() {
     private lateinit var store: DeviceStore
     private lateinit var connection: MuseConnection
@@ -57,6 +61,7 @@ class PortalActivity : Activity() {
     @Volatile private var foreground = false
     @Volatile private var cancelled = false
     private var capture: Thread? = null
+    private val captureGeneration = CaptureGeneration()
     private val camera = PortalCamera()
     private val imageFetcher = PortalImageFetcher()
     private val displayGuard = com.muse.gadget.display.DisplayGuard()
@@ -66,6 +71,84 @@ class PortalActivity : Activity() {
     private val privacyHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val clearVisible = Runnable { clearConversation() }
     private var connected = false
+    private lateinit var wakeDetector: VoskWakeWordDetector
+    private val wakePolicy = WakeSessionPolicy()
+    private var wakeEnabled = false // Session-only explicit consent; never enable on boot/restart.
+    private var pttHeld = false
+    private var wakeHandoff = false
+    private val wakeTick = object : Runnable {
+        override fun run() {
+            syncWakeListening()
+            if (foreground) privacyHandler.postDelayed(this, 500)
+        }
+    }
+
+    private fun pauseWake() {
+        wakePolicy.revoke(android.os.SystemClock.elapsedRealtime())
+        if (::wakeDetector.isInitialized) wakeDetector.stop()
+    }
+
+    private fun cancelCapture() {
+        captureGeneration.revoke()
+        wakeHandoff = false
+        cancelled = true
+        recording = false
+        try { recorder?.stop() } catch (_: Exception) { }
+        if (::ui.isInitialized) {
+            ui.talkButton.setListening(false)
+            ui.micState.text = "Microphone off"
+        }
+    }
+
+    private fun syncWakeListening() {
+        if (!::wakeDetector.isInitialized || !::ui.isInitialized) return
+        val muted = (getSystemService(AUDIO_SERVICE) as AudioManager).isMicrophoneMute
+        if (muted && (recording || wakeHandoff)) cancelCapture()
+        wakePolicy.update(wakeEnabled, foreground, connected,
+            checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED,
+            muted, recording || capture?.isAlive == true || tts?.isSpeaking == true || speechTail != null || pttHeld || wakeHandoff)
+        val lease = wakePolicy.lease(android.os.SystemClock.elapsedRealtime())
+        ui.wakeButton.text = if (!wakeEnabled) "Wake off" else if (lease == null) "Wake paused"
+            else if (wakeDetector.isListening) "Wake on" else "Wake starting"
+        if (lease == null) { wakeDetector.stop(); return }
+        wakeDetector.start({ score ->
+            // Re-evaluate conditions at delivery, not just when microphone work began.
+            val audio = getSystemService(AUDIO_SERVICE) as AudioManager
+            wakePolicy.update(wakeEnabled, foreground, connected,
+                checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED,
+                audio.isMicrophoneMute, recording || capture?.isAlive == true || tts?.isSpeaking == true || speechTail != null || pttHeld || wakeHandoff)
+            if (wakePolicy.claim(lease, score, android.os.SystemClock.elapsedRealtime())) {
+                wakeHandoff = true
+                startRecording(handsFree = true)
+            }
+        }, { error ->
+            wakeEnabled = false
+            ui.wakeButton.text = "Wake off"
+            ui.micState.text = error
+        })
+    }
+
+    private fun toggleWake() {
+        if (wakeEnabled) {
+            wakeEnabled = false
+            cancelCapture()
+            pauseWake()
+            ui.wakeButton.text = "Wake off"
+            ui.micState.text = "Wake listening off · Hold to talk still works"
+            return
+        }
+        if (!wakeDetector.available()) { status("Wake model not packaged; use Hold to talk."); return }
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 10)
+            status("Grant microphone permission, then choose Wake again.")
+            return
+        }
+        AlertDialog.Builder(this).setTitle("Enable local Nova wake word?")
+            .setMessage("While this app is open, the microphone checks for Nova on this device. Say Nova, pause until the listening indicator appears, then speak. Only the following voice note is sent to Muse. Wake matching does not identify who is speaking. Physical mute and leaving the app stop listening; restart leaves it off. This prototype still needs room-noise and distance testing.")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Enable") { _, _ -> wakeEnabled = true; syncWakeListening() }
+            .show()
+    }
 
     /** Clearing, leaving or reconnecting revokes images still in flight. */
     private fun revokeImages() {
@@ -74,12 +157,15 @@ class PortalActivity : Activity() {
     }
 
     private fun clearConversation() {
+        cancelCapture()
+        pauseWake()
         revokeImages()
         if (::ui.isInitialized) {
             ui.clearConversation()
             ui.messageInput.text.clear()
         }
         voiceBubbles.clear()
+        speechTail = null
         tts?.stop()
     }
 
@@ -98,6 +184,7 @@ class PortalActivity : Activity() {
         )
 
         ui = PortalDashboard(this)
+        wakeDetector = VoskWakeWordDetector(this)
         setContentView(ui)
         bindUiActions()
 
@@ -106,7 +193,7 @@ class PortalActivity : Activity() {
             ::status,
             { text -> runOnUiThread { if (foreground) appendMessage("Muse", text) } },
             { ready -> runOnUiThread {
-                if (!ready) revokeImages()
+                if (!ready) { revokeImages(); cancelCapture(); pauseWake() }
                 connected = ready
                 ui.setConnectionState(ready)
                 ui.deviceStatus.show(
@@ -130,11 +217,13 @@ class PortalActivity : Activity() {
     }
 
     private fun bindUiActions() {
+        ui.wakeButton.setOnClickListener { toggleWake() }
         ui.settingsButton.setOnClickListener { showSettings() }
         ui.clearButton.setOnClickListener { clearConversation() }
         ui.stopAudioButton.setOnClickListener {
-            cancelled = true
-            recording = false
+            cancelCapture()
+            pauseWake()
+            speechTail = null
             tts?.stop()
             ui.setAudioState("AUDIO STOPPED", "Playback stopped", PortalPalette.TEXT_SECONDARY)
         }
@@ -158,20 +247,22 @@ class PortalActivity : Activity() {
             if (!ui.talkButton.isEnabled) return@setOnTouchListener true
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    pttHeld = true
                     ui.talkButton.setTouchPressed(true)
                     startRecording()
                     true
                 }
                 MotionEvent.ACTION_UP -> {
+                    pttHeld = false
                     ui.talkButton.setTouchPressed(false)
                     recording = false
                     ui.talkButton.performClick()
                     true
                 }
                 MotionEvent.ACTION_CANCEL -> {
+                    pttHeld = false
                     ui.talkButton.setTouchPressed(false)
-                    cancelled = true
-                    recording = false
+                    cancelCapture()
                     true
                 }
                 else -> true
@@ -234,6 +325,7 @@ class PortalActivity : Activity() {
                     runOnUiThread {
                         if (id == null || id != speechTail) return@runOnUiThread
                         speechTail = null
+                        pauseWake() // Let the speaker/room tail settle before rearming.
                         ui.setAudioState("SPEAKER READY", "On-device voice is ready", PortalPalette.LILAC)
                         ui.deviceStatus.show(if (connected) "READY" else "OFFLINE", "Hold to talk")
                     }
@@ -244,6 +336,7 @@ class PortalActivity : Activity() {
                     runOnUiThread {
                         if (!isCurrentSpeech(id)) return@runOnUiThread
                         speechTail = null
+                        pauseWake()
                         if (!recording) ui.deviceStatus.show(if (connected) "READY" else "OFFLINE", "Audio stopped")
                     }
                 }
@@ -253,6 +346,7 @@ class PortalActivity : Activity() {
                     runOnUiThread {
                         if (!isCurrentSpeech(id)) return@runOnUiThread
                         speechTail = null
+                        pauseWake()
                         ui.setAudioState("SPEECH FAILED", "Check audio settings", PortalPalette.DANGER)
                     }
                     android.util.Log.i("MusePortalState", "Speech synthesis failed.")
@@ -304,6 +398,8 @@ class PortalActivity : Activity() {
     override fun onStart() {
         super.onStart()
         foreground = true
+        privacyHandler.removeCallbacks(wakeTick)
+        privacyHandler.post(wakeTick)
     }
 
     private fun takePhoto(who: String, done: (ByteArray?, String?) -> Unit) {
@@ -392,6 +488,8 @@ class PortalActivity : Activity() {
 
     /** Only called for an already-authorized reply or the local speaker test. */
     private fun speak(text: String) {
+        wakeHandoff = false
+        pauseWake()
         if (!offlineSpeech) {
             ui.setAudioState("AUDIO UNAVAILABLE", "No offline English voice found", PortalPalette.DANGER)
             return
@@ -448,8 +546,9 @@ class PortalActivity : Activity() {
         }
         option("Test speaker", "Play a short sentence using the on-device voice") { speak("Your Portal speaker is ready.") }
         option("Stop audio", "Interrupt any voice playback") {
-            cancelled = true
-            recording = false
+            pauseWake()
+            cancelCapture()
+            speechTail = null
             tts?.stop()
         }
         option("Reconnect", "Open a fresh secure connection to Muse") { connection.connect() }
@@ -532,21 +631,35 @@ class PortalActivity : Activity() {
         }
     }
 
-    private fun startRecording() {
+    private fun startRecording(handsFree: Boolean = false) {
+        if (!foreground || !connected || (!handsFree && !pttHeld) || (handsFree && (!wakeEnabled || !wakeHandoff))) return
+        if ((getSystemService(AUDIO_SERVICE) as AudioManager).isMicrophoneMute) { wakeHandoff = false; return }
+        pauseWake()
+        // Wait for the monitor to release AudioRecord rather than opening two recorders.
+        if (wakeDetector.isRunning) {
+            privacyHandler.postDelayed({ startRecording(handsFree) }, 75)
+            return
+        }
         if (capture?.isAlive == true) return
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 10)
+            wakeHandoff = false
             return
         }
+        wakeHandoff = false
+        speechTail = null
         tts?.stop()
         cancelled = false
         recording = true
+        val captureToken = captureGeneration.begin()
         ui.talkButton.setListening(true)
-        ui.deviceStatus.show("LISTENING", "Release to send · Maximum 15 seconds")
-        ui.micState.text = "Microphone on · Release to send · Maximum 15 seconds"
+        val captureHint = if (handsFree) "Speak now · Ends after a pause · Maximum 15 seconds" else "Release to send · Maximum 15 seconds"
+        ui.deviceStatus.show("LISTENING", captureHint)
+        ui.micState.text = "Microphone on · $captureHint"
         capture = Thread {
             var local: AudioRecord? = null
             try {
+                if (!foreground || cancelled || !captureGeneration.valid(captureToken)) return@Thread
                 val minimum = AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
                 require(minimum > 0)
                 local = AudioRecord(
@@ -558,13 +671,17 @@ class PortalActivity : Activity() {
                 )
                 check(local.state == AudioRecord.STATE_INITIALIZED)
                 recorder = local
+                if (!foreground || cancelled || !captureGeneration.valid(captureToken) ||
+                    (getSystemService(AUDIO_SERVICE) as AudioManager).isMicrophoneMute) return@Thread
                 local.startRecording()
                 val pcm = ByteArrayOutputStream()
+                val endpoint = if (handsFree) WakeUtteranceEndpoint() else null
                 val block = ByteArray(2048)
-                while (recording && foreground && pcm.size() < 480000) {
+                while (recording && foreground && captureGeneration.valid(captureToken) && pcm.size() < 480000) {
                     val count = local.read(block, 0, minOf(block.size, 480000 - pcm.size()))
                     check(count >= 0)
                     if (count > 0) pcm.write(block, 0, count)
+                    if (endpoint?.accept(block, count) == true) recording = false
                     var peak = 0
                     for (index in 0 until count - 1 step 2) {
                         val sample = ((block[index].toInt() and 255) or (block[index + 1].toInt() shl 8)).toShort().toInt()
@@ -573,15 +690,19 @@ class PortalActivity : Activity() {
                     val level = peak / 32768f
                     val progress = pcm.size() / 480000f
                     runOnUiThread {
-                        if (recording) ui.deviceStatus.show("LISTENING", "Release to send · Maximum 15 seconds", level, progress)
+                        if (recording && captureGeneration.valid(captureToken)) ui.deviceStatus.show("LISTENING", captureHint, level, progress)
                     }
                 }
-                if (!cancelled && foreground && pcm.size() >= 1600) {
+                if (!cancelled && foreground && pcm.size() >= 1600 && (endpoint == null || endpoint.hasSpeech)) {
                     val data = pcm.toByteArray()
                     val header = VoiceNoteEncoder.wavHeader()
                     java.nio.ByteBuffer.wrap(header).order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(4, data.size + 36).putInt(40, data.size)
                     val id = java.util.UUID.randomUUID().toString()
                     runOnUiThread {
+                        if (!foreground || !connected || cancelled || !captureGeneration.valid(captureToken) ||
+                            (handsFree && !wakeEnabled) ||
+                            (getSystemService(AUDIO_SERVICE) as AudioManager).isMicrophoneMute ||
+                            checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return@runOnUiThread
                         voiceBubbles[id] = appendMessage("You", "Transcribing your voice note…")
                         while (voiceBubbles.size > 50) voiceBubbles.remove(voiceBubbles.keys.first())
                         connection.sendVoice(header + data, id)
@@ -595,7 +716,7 @@ class PortalActivity : Activity() {
                     }
                 }
             } catch (_: Exception) {
-                status("Microphone capture failed; no recording sent.")
+                if (captureGeneration.valid(captureToken) && !cancelled) status("Microphone capture failed; no recording sent.")
             } finally {
                 recording = false
                 try {
@@ -605,6 +726,7 @@ class PortalActivity : Activity() {
                 local?.release()
                 recorder = null
                 runOnUiThread {
+                    if (!captureGeneration.valid(captureToken)) return@runOnUiThread
                     ui.talkButton.setListening(false)
                     ui.micState.text = "Microphone off · Hold to speak, then release to send"
                 }
@@ -614,6 +736,12 @@ class PortalActivity : Activity() {
 
     override fun onStop() {
         foreground = false
+        pttHeld = false
+        wakeHandoff = false
+        // Returning to the foreground requires a fresh opt-in, never a hidden rearm.
+        wakeEnabled = false
+        privacyHandler.removeCallbacks(wakeTick)
+        pauseWake()
         cancelled = true
         recording = false
         camera.cancel()

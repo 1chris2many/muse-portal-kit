@@ -42,6 +42,8 @@ dependencies {
 
     // Muse transport (OkHttp WebSocket). The unwired Edge Read Aloud prototype is in /legacy/android/tts.
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.alphacephei:vosk-android:0.3.75@aar")
+    implementation("net.java.dev.jna:jna:5.18.1@aar")
 
     testImplementation(kotlin("test"))
     testImplementation("org.junit.jupiter:junit-jupiter-api:5.11.4")
