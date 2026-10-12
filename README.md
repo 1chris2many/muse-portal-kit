@@ -38,7 +38,8 @@ investigate a supported export or bridge and document the remaining gap.
 > Android 9 Portal installation, encrypted account provisioning, direct Wi-Fi
 > connection, chat acceptance, voice transcription, camera capture, isolated
 > developer builds, install/rollback and reconnect have been observed. Automatic
-> reply display/audio remains blocked when the server omits reply-parent links.
+> native subscription reply display/audio needs server reply-parent links. The
+> optional exact-request bridge below provides a separately addressed route.
 > Native remote camera invocation depends on the Muse runtime exposing gadget tools;
 > an authenticated USB-host fallback has been verified. The original unwired
 > always-listening and BLE skeleton prototypes are retained in `legacy/android/`,
@@ -110,16 +111,70 @@ CPU/thermal load and end-to-end owner interaction still require acceptance testi
 Do not treat an APK build as acoustic validation or enable it unattended. No
 synthetic prompts should be sent to an owner's Muse conversation for testing.
 
-### Reply-options component (offline development slice)
+### Exact-request replies and native options (0.4.1)
+
+The optional authenticated USB-host bridge provides `portal.requests.read`,
+`portal.deliver`, and `portal.delivery.status`. These are a separate addressed
+route when the shared Muse subscription omits usable reply-parent metadata.
+They never mirror the next mobile/Home Mini reply or manufacture a user message.
+
+An actual local text/voice submission must receive its native ACK first. From its
+existing main conversation, Muse reads one **exact** current input with
+`{"exact_text":"the precise current input"}`. Alternatively it can supply
+`{"upload_sha256":"SHA-256 of the actual original uploaded WAV"}`; transformed
+uploads fail to match. Voice reads wait for the correlated canonical transcript.
+No list, latest, substring, timing or fuzzy selector is provided. Duplicate matching
+inputs fail closed. The read returns canonical input text plus device, generation,
+request and native-input IDs. Muse deliberately answers that input and echoes all
+binding fields in one version-1 delivery, for example:
+
+```json
+{
+  "version": 1,
+  "delivery_id": "unique-reply-id",
+  "device_id": "from-canonical-read",
+  "conversation_id": "existing-main",
+  "generation": "from-canonical-read",
+  "request_id": "from-canonical-read",
+  "input_message_id": "from-canonical-read",
+  "content": [
+    {"type": "text", "text": "The response composed for that exact input."},
+    {"type": "options", "options": ["Tell me more", "Thanks"]}
+  ]
+}
+```
+
+`existing-main` is this adapter's explicit binding to the current main conversation,
+not an invented native Muse thread ID. A bridge bearer authenticates the existing
+adapter; it **does not distinguish a main-context author from a worker**. Use the
+existing main-context authoring/exact-text relay arrangement, never worker-composed
+replies. This implementation creates no poller, new Muse, cron, fake prompt or push
+trigger. An existing main-context tool call/manual workflow and a genuine owner
+turn are required for end-to-end acceptance; automatic dispatch is not claimed.
+
+Only the one final answer to a local voice input may use on-device speech. A remote
+`speak` flag is rejected. Native and addressed replies consume the same local grant,
+so the second path cannot replay a final answer. Stop cancels existing/pending speech;
+text and option taps remain silent. Native options send the exact tapped label as a
+new local text input, never as code, URL, callback or a voice request.
+
+Pending requests expire within two minutes. Clear, backgrounding, reconnect and
+the privacy timer revoke handles. Late ACKs cannot resurrect cleared inputs. Parsing
+is bounded to 64 KiB, text to 16,000 UTF-8 bytes, and options to six bounded labels.
+Unknown content types are explicitly rejected. Final retries must reuse the same
+delivery ID and bytes; changed retries fail. Query `portal.delivery.status` with
+`{"delivery_id":"same-reply-id"}` after a timeout. `rendered` and speech states are
+separate; acceptance is not a claim that a person heard the audio.
+
+### Reply-options component
 
 `ReplyOptionsGate` and `ReplyOptionsView` implement bounded native option buttons
 with exact-label taps, request/device/conversation checks, expiry, replay handling
-and clearing. They are **not connected to incoming Muse payloads yet**. The
+and clearing. They are connected to the exact-request bridge above. The
 `options` content shape is a proposed addressed-delivery format, not a claim that
-the gadget SDK exports `muse.create_options` widgets. The view cannot send a
-message itself. Integration must validate every tap through the gate on its
-executor, then send the exact selected label as a fresh local text input; it must
-also clear both the gate and view on background, reconnect and privacy clear.
+the gadget SDK exports `muse.create_options` widgets. The activity validates every
+tap on the UI thread, sends the exact selected label as a fresh local text input,
+and clears both the gate and view on background, reconnect and privacy clear.
 Protocol and Android 9 view fixtures exercise this component without opening a
 Portal connection. See issue [#2](https://github.com/1chris2many/muse-portal-kit/issues/2).
 
@@ -415,6 +470,9 @@ The owner must authorize both agent camera access and app development/deployment
 | Action | Arguments | Result |
 |---|---|---|
 | `portal.camera` | `{}` | JPEG in `data_base64`; `format: jpeg-base64` |
+| `portal.requests.read` | Exactly one of `exact_text` or `upload_sha256` | One acknowledged canonical Portal input plus reply binding |
+| `portal.deliver` | Versioned bound envelope above | Idempotent render/speech receipt; text/options only |
+| `portal.delivery.status` | `delivery_id` | Separate rendered and speech status, no reply text |
 | `portal.files` | `{}` | Editable source paths |
 | `portal.read` | `path` | UTF-8 source and SHA-256 |
 | `portal.write` | `path`, `content`, `expected_sha256` | Optimistic update; use null hash only for a new file |
@@ -429,7 +487,12 @@ host adapter, credentials and unrelated Mac files are outside that scope.
 Builds have no network, host home, signing key, ADB, or Docker socket access.
 First prepare the Docker SDK image and warm its dependency cache from reviewed
 source using `tools/portal-build.Dockerfile` and `tools/portal-warm.Dockerfile`.
-New dependencies require a reviewed cache refresh. The host checks package,
+New dependencies require a reviewed cache refresh.
+The warm image can include the reviewed public wake model in `/opt/portal-wake-model`;
+its entrypoint copies that model into each disposable build before Gradle runs.
+The remote editable source set cannot replace the builder's trusted model. APK
+output is bounded to 128 MiB to allow the bundled model and native engine ABIs.
+The host checks package,
 permission scope and artifact hash before signing/installing. Installation can
 restart the app; test the changed behavior afterward. Rollback restores code,
 not an earlier copy of app data. Install and rollback reject version codes below

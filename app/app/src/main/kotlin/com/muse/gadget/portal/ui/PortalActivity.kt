@@ -37,6 +37,9 @@ import com.muse.gadget.audio.isEnglishVoiceLanguage
 import com.muse.gadget.portal.DeviceStore
 import com.muse.gadget.portal.LocalPortalBridge
 import com.muse.gadget.portal.MuseConnection
+import com.muse.gadget.portal.AddressedDeliveryJson
+import com.muse.gadget.session.AddressedReplies
+import com.muse.gadget.options.ReplyOptionsGate
 import com.muse.gadget.portal.PortalCamera
 import com.muse.gadget.portal.PortalImageFetcher
 import com.muse.gadget.portal.wake.VoskWakeWordDetector
@@ -71,6 +74,10 @@ class PortalActivity : Activity() {
     private val privacyHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val clearVisible = Runnable { clearConversation() }
     private var connected = false
+    private lateinit var addressed: AddressedReplies
+    private lateinit var optionGate: ReplyOptionsGate
+    private lateinit var optionView: ReplyOptionsView
+    private var addressedSpeech: String? = null
     private lateinit var wakeDetector: VoskWakeWordDetector
     private val wakePolicy = WakeSessionPolicy()
     private var wakeEnabled = false // Session-only explicit consent; never enable on boot/restart.
@@ -157,6 +164,10 @@ class PortalActivity : Activity() {
     }
 
     private fun clearConversation() {
+        if (::addressed.isInitialized) addressed.revoke(foreground)
+        if (::optionGate.isInitialized) optionGate.clear()
+        if (::optionView.isInitialized) optionView.clear()
+        addressedSpeech = null
         cancelCapture()
         pauseWake()
         revokeImages()
@@ -179,6 +190,9 @@ class PortalActivity : Activity() {
         }
         volumeControlStream = AudioManager.STREAM_MUSIC
         store = DeviceStore(this)
+        addressed = AddressedReplies(store.nodeId)
+        optionGate = ReplyOptionsGate(store.nodeId, "existing-main")
+        optionView = ReplyOptionsView(this)
         java.io.File(noBackupFilesDir, "identity-public.json").writeText(
             JSONObject().put("mac", store.mac).put("node_id", store.nodeId).toString(),
         )
@@ -193,7 +207,11 @@ class PortalActivity : Activity() {
             ::status,
             { text -> runOnUiThread { if (foreground) appendMessage("Muse", text) } },
             { ready -> runOnUiThread {
-                if (!ready) { revokeImages(); cancelCapture(); pauseWake() }
+                if (!ready) {
+                    revokeImages(); cancelCapture(); pauseWake()
+                    addressed.revoke(foreground); optionGate.clear(); optionView.clear()
+                    addressedSpeech = null; speechTail = null; tts?.stop()
+                }
                 connected = ready
                 ui.setConnectionState(ready)
                 ui.deviceStatus.show(
@@ -203,14 +221,26 @@ class PortalActivity : Activity() {
             } },
             { id, text -> runOnUiThread {
                 voiceBubbles[id]?.text = text
+                addressed.transcript(id, text)
                 android.util.Log.i("MusePortalState", "Voice transcript received and displayed.")
             } },
             { done -> runOnUiThread { takePhoto("Muse", done) } },
             { text -> runOnUiThread { if (foreground && !recording) speak(text) } },
             { url, done -> runOnUiThread { showImage(url, done) } },
             { runOnUiThread { revokeImages(); ui.clearImages() } },
+            { id, nativeId -> runOnUiThread { addressed.acknowledge(id, nativeId) } },
+            { delivery -> runOnUiThread {
+                if (foreground && connected && (delivery.display || delivery.speak)) {
+                    val grant = addressed.acceptNative(delivery.inputMessageId, delivery.final)
+                    if (grant != null) {
+                        if (delivery.display) appendMessage("Muse", delivery.text)
+                        if (delivery.speak && grant.speak && !recording) speak(delivery.text)
+                    }
+                }
+            } },
         )
-        localBridge = LocalPortalBridge(this) { done -> runOnUiThread { takePhoto("Muse", done) } }
+        localBridge = LocalPortalBridge(this,
+            { done -> runOnUiThread { takePhoto("Muse", done) } }, ::bridgeDelivery)
         initializeTextToSpeech()
         diagnostics()
         importProvisioningIfPresent()
@@ -221,6 +251,8 @@ class PortalActivity : Activity() {
         ui.settingsButton.setOnClickListener { showSettings() }
         ui.clearButton.setOnClickListener { clearConversation() }
         ui.stopAudioButton.setOnClickListener {
+            addressed.stopAudio()
+            addressedSpeech = null
             cancelCapture()
             pauseWake()
             speechTail = null
@@ -229,7 +261,10 @@ class PortalActivity : Activity() {
         }
         ui.cameraButton.setOnClickListener {
             takePhoto("You") { bytes, error ->
-                if (bytes != null) connection.sendPhoto(bytes) else status(error ?: "Camera unavailable")
+                if (bytes != null) {
+                    val id = java.util.UUID.randomUUID().toString()
+                    if (beginLocal(id, AddressedReplies.Kind.PHOTO)) connection.sendPhoto(bytes, id)
+                } else status(error ?: "Camera unavailable")
             }
         }
         ui.sendButton.setOnClickListener { sendTypedMessage() }
@@ -273,9 +308,77 @@ class PortalActivity : Activity() {
     private fun sendTypedMessage() {
         val text = ui.messageInput.text.toString().trim()
         if (text.isEmpty()) return
+        if (sendLocalText(text)) ui.messageInput.text.clear()
+    }
+
+    private fun beginLocal(id: String, kind: AddressedReplies.Kind, text: String? = null, hash: String? = null): Boolean {
+        if (!foreground || !connected) { status("Not connected. Nothing sent."); return false }
+        return try { addressed.begin(id, kind, text, hash); true }
+        catch (_: AddressedReplies.Rejected) { status("Clear the conversation before sending another input."); false }
+    }
+
+    private fun sendLocalText(text: String): Boolean {
+        val id = java.util.UUID.randomUUID().toString()
+        if (!beginLocal(id, AddressedReplies.Kind.TEXT, text)) return false
         appendMessage("You", text)
-        connection.sendText(text)
-        ui.messageInput.text.clear()
+        connection.sendText(text, id)
+        return true
+    }
+
+    /** One UI-thread transaction prevents Clear/background from racing a queued remote render. */
+    private fun bridgeDelivery(path: String, args: JSONObject): JSONObject {
+        val done = java.util.concurrent.CountDownLatch(1)
+        val cancelled = java.util.concurrent.atomic.AtomicBoolean(false)
+        var result: JSONObject? = null
+        var error: AddressedReplies.Rejected? = null
+        val deadline = android.os.SystemClock.elapsedRealtime() + 3000
+        runOnUiThread {
+            try {
+                if (cancelled.get() || android.os.SystemClock.elapsedRealtime() >= deadline) throw AddressedReplies.Rejected("delivery_timeout_query_same_id")
+                if (!foreground || !connected) throw AddressedReplies.Rejected("not_foreground_connected")
+                result = when (path) {
+                    "/requests/read" -> {
+                        val selector = AddressedDeliveryJson.selector(args)
+                        AddressedDeliveryJson.canonical(addressed.read(selector.first, selector.second)).put("ok", true)
+                    }
+                    "/delivery/status" -> AddressedDeliveryJson.receipt(addressed.receipt(AddressedDeliveryJson.deliveryId(args))).put("ok", true)
+                    "/deliver" -> {
+                        val envelope = AddressedDeliveryJson.envelope(args)
+                        val accepted = addressed.accept(envelope, recording || capture?.isAlive == true || wakeHandoff)
+                        if (!accepted.duplicate) {
+                            accepted.text?.let { appendMessage("Muse", it) }
+                            accepted.options?.let { labels ->
+                                optionGate.openRequest(accepted.requestId)
+                                val card = optionGate.present(ReplyOptionsGate.Delivery(envelope.deliveryId,
+                                    store.nodeId, "existing-main", accepted.requestId, labels))
+                                if (card is ReplyOptionsGate.Presentation.Presented) {
+                                    ui.appendOptions(optionView)
+                                    optionView.render(card.card.copy(expiresAtMs = minOf(card.card.expiresAtMs, accepted.expiresAtMs))) { token, index, label ->
+                                        if (foreground && connected) {
+                                            val selected = optionGate.select(token, index, label)
+                                            if (selected is ReplyOptionsGate.Selection.Selected) sendLocalText(selected.text)
+                                        }
+                                    }
+                                    privacyHandler.removeCallbacks(clearVisible)
+                                    privacyHandler.postDelayed(clearVisible, 120000)
+                                }
+                            }
+                            addressed.rendered(envelope.deliveryId)
+                            if (accepted.speak) accepted.text?.let { speak(it, envelope.deliveryId) }
+                        }
+                        AddressedDeliveryJson.receipt(addressed.receipt(envelope.deliveryId)).put("ok", true).put("duplicate", accepted.duplicate)
+                    }
+                    else -> throw AddressedReplies.Rejected("unknown_endpoint")
+                }
+            } catch (e: AddressedReplies.Rejected) { error = e }
+              catch (_: Exception) { error = AddressedReplies.Rejected("delivery_failed_query_same_id") }
+            finally { done.countDown() }
+        }
+        if (!done.await(4, java.util.concurrent.TimeUnit.SECONDS)) {
+            cancelled.set(true); throw AddressedReplies.Rejected("delivery_timeout_query_same_id")
+        }
+        error?.let { throw it }
+        return result ?: throw AddressedReplies.Rejected("delivery_failed_query_same_id")
     }
 
     private fun initializeTextToSpeech() {
@@ -315,6 +418,7 @@ class PortalActivity : Activity() {
                     if (id == null || id.endsWith("-pause")) return
                     runOnUiThread {
                         if (!isCurrentSpeech(id)) return@runOnUiThread
+                        addressedSpeech?.let { addressed.speech(it, "started") }
                         ui.setAudioState("SPEAKING", "On-device voice · Tap Stop to interrupt", PortalPalette.LILAC)
                         ui.deviceStatus.show("SPEAKING", "On-device voice · Tap Stop to interrupt")
                     }
@@ -324,6 +428,8 @@ class PortalActivity : Activity() {
                 override fun onDone(id: String?) {
                     runOnUiThread {
                         if (id == null || id != speechTail) return@runOnUiThread
+                        addressedSpeech?.let { addressed.speech(it, "completed") }
+                        addressedSpeech = null
                         speechTail = null
                         pauseWake() // Let the speaker/room tail settle before rearming.
                         ui.setAudioState("SPEAKER READY", "On-device voice is ready", PortalPalette.LILAC)
@@ -335,6 +441,8 @@ class PortalActivity : Activity() {
                 override fun onStop(id: String?, interrupted: Boolean) {
                     runOnUiThread {
                         if (!isCurrentSpeech(id)) return@runOnUiThread
+                        addressedSpeech?.let { addressed.speech(it, "cancelled") }
+                        addressedSpeech = null
                         speechTail = null
                         pauseWake()
                         if (!recording) ui.deviceStatus.show(if (connected) "READY" else "OFFLINE", "Audio stopped")
@@ -345,6 +453,8 @@ class PortalActivity : Activity() {
                 override fun onError(id: String?) {
                     runOnUiThread {
                         if (!isCurrentSpeech(id)) return@runOnUiThread
+                        addressedSpeech?.let { addressed.speech(it, "failed") }
+                        addressedSpeech = null
                         speechTail = null
                         pauseWake()
                         ui.setAudioState("SPEECH FAILED", "Check audio settings", PortalPalette.DANGER)
@@ -398,6 +508,7 @@ class PortalActivity : Activity() {
     override fun onStart() {
         super.onStart()
         foreground = true
+        addressed.setForeground(true)
         privacyHandler.removeCallbacks(wakeTick)
         privacyHandler.post(wakeTick)
     }
@@ -487,16 +598,21 @@ class PortalActivity : Activity() {
     }
 
     /** Only called for an already-authorized reply or the local speaker test. */
-    private fun speak(text: String) {
+    private fun speak(text: String, deliveryId: String? = null) {
         wakeHandoff = false
         pauseWake()
+        addressedSpeech?.let { addressed.speech(it, "cancelled") }
+        addressedSpeech = deliveryId
         if (!offlineSpeech) {
+            deliveryId?.let { addressed.speech(it, "unavailable") }
+            addressedSpeech = null
             ui.setAudioState("AUDIO UNAVAILABLE", "No offline English voice found", PortalPalette.DANGER)
             return
         }
-        val engine = tts ?: return
+        val engine = tts ?: run { deliveryId?.let { addressed.speech(it, "unavailable") }; addressedSpeech = null; return }
         val script = SpeechScript.plan(text, minOf(SpeechScript.MAX_UTTERANCE_CHARS, TextToSpeech.getMaxSpeechInputLength()))
-        if (script.isEmpty()) return
+        if (script.isEmpty()) { deliveryId?.let { addressed.speech(it, "unavailable") }; addressedSpeech = null; return }
+        engine.stop()
         val serial = ++speechSerial
         speechTail = "speech-$serial-${script.lastIndex}"
         for ((index, utterance) in script.withIndex()) {
@@ -505,12 +621,15 @@ class PortalActivity : Activity() {
             engine.setPitch(utterance.pitch)
             if (engine.speak(utterance.text, TextToSpeech.QUEUE_ADD, null, id) == TextToSpeech.ERROR) {
                 speechTail = null
+                deliveryId?.let { addressed.speech(it, "failed") }
+                addressedSpeech = null
                 ui.setAudioState("SPEECH FAILED", "Check audio settings", PortalPalette.DANGER)
                 return
             }
             if (utterance.pauseAfterMs > 0) engine.playSilentUtterance(utterance.pauseAfterMs.toLong(), TextToSpeech.QUEUE_ADD, "$id-pause")
         }
         android.util.Log.i("MusePortalState", "Speech script queued; utterances=${script.size}")
+        deliveryId?.let { addressed.speech(it, "queued") }
     }
 
     private fun showSettings() {
@@ -546,6 +665,7 @@ class PortalActivity : Activity() {
         }
         option("Test speaker", "Play a short sentence using the on-device voice") { speak("Your Portal speaker is ready.") }
         option("Stop audio", "Interrupt any voice playback") {
+            addressed.stopAudio(); addressedSpeech = null
             pauseWake()
             cancelCapture()
             speechTail = null
@@ -647,6 +767,7 @@ class PortalActivity : Activity() {
             return
         }
         wakeHandoff = false
+        addressed.stopAudio(); addressedSpeech = null
         speechTail = null
         tts?.stop()
         cancelled = false
@@ -703,6 +824,7 @@ class PortalActivity : Activity() {
                             (handsFree && !wakeEnabled) ||
                             (getSystemService(AUDIO_SERVICE) as AudioManager).isMicrophoneMute ||
                             checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return@runOnUiThread
+                        if (!beginLocal(id, AddressedReplies.Kind.VOICE, hash = AddressedReplies.uploadHash(header + data))) return@runOnUiThread
                         voiceBubbles[id] = appendMessage("You", "Transcribing your voice note…")
                         while (voiceBubbles.size > 50) voiceBubbles.remove(voiceBubbles.keys.first())
                         connection.sendVoice(header + data, id)
