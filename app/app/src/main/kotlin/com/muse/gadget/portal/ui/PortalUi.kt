@@ -136,6 +136,7 @@ class PortalTalkButton(context: Context) : View(context) {
     }
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private var listening = false
+    private var handsFree = false
     private var touchPressed = false
 
     init {
@@ -146,10 +147,12 @@ class PortalTalkButton(context: Context) : View(context) {
         minimumHeight = context.dp(84)
     }
 
-    fun setListening(active: Boolean) {
+    fun setListening(active: Boolean, handsFree: Boolean = false) {
         listening = active
+        this.handsFree = active && handsFree
         contentDescription = when {
             !isEnabled -> "Voice input unavailable while connecting"
+            active && handsFree -> "Listening hands-free. Pause to send; Stop to cancel"
             active -> "Listening. Release to send voice note"
             else -> "Hold to talk"
         }
@@ -165,6 +168,7 @@ class PortalTalkButton(context: Context) : View(context) {
         super.setEnabled(enabled)
         contentDescription = when {
             !enabled -> "Voice input unavailable while connecting"
+            listening && handsFree -> "Listening hands-free. Pause to send; Stop to cancel"
             listening -> "Listening. Release to send voice note"
             else -> "Hold to talk"
         }
@@ -214,6 +218,7 @@ class PortalTalkButton(context: Context) : View(context) {
         textPaint.textSize = context.spPx(20f)
         val headline = when {
             !enabled -> "Voice console is connecting"
+            listening && handsFree -> "Listening… pause to send"
             listening -> "Listening… release to send"
             else -> "Hold to talk"
         }
@@ -223,6 +228,7 @@ class PortalTalkButton(context: Context) : View(context) {
         textPaint.textSize = context.spPx(13f)
         val detail = when {
             !enabled -> "Secure connection required"
+            listening && handsFree -> "Hands-free note · Stop to cancel"
             listening -> "Your note is sent when you release"
             else -> "Press and hold for a private voice note"
         }

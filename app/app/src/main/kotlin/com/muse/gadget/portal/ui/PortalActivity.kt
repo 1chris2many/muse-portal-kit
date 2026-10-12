@@ -652,7 +652,7 @@ class PortalActivity : Activity() {
         cancelled = false
         recording = true
         val captureToken = captureGeneration.begin()
-        ui.talkButton.setListening(true)
+        ui.talkButton.setListening(true, handsFree)
         val captureHint = if (handsFree) "Speak now · Ends after a pause · Maximum 15 seconds" else "Release to send · Maximum 15 seconds"
         ui.deviceStatus.show("LISTENING", captureHint)
         ui.micState.text = "Microphone on · $captureHint"

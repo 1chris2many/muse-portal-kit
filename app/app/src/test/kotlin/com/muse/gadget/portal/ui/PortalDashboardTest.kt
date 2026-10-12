@@ -83,6 +83,19 @@ class PortalDashboardTest {
         assertFalse(ui.typingControlsVisible)
     }
 
+    @Test fun handsFreeInstructionDoesNotAskForARelease() {
+        val ui = dashboard()
+        ui.setConnectionState(true)
+        ui.talkButton.setListening(true, handsFree = true)
+        measure(ui)
+        assertInside(ui, ui.talkButton, 88)
+        assertEquals("Listening hands-free. Pause to send; Stop to cancel", ui.talkButton.contentDescription)
+        ui.talkButton.setListening(true)
+        assertEquals("Listening. Release to send voice note", ui.talkButton.contentDescription)
+        ui.talkButton.setListening(false)
+        assertEquals("Hold to talk", ui.talkButton.contentDescription)
+    }
+
     private fun descendants(root: View): List<View> = listOf(root) +
         if (root is ViewGroup) (0 until root.childCount).flatMap { descendants(root.getChildAt(it)) } else emptyList()
 
