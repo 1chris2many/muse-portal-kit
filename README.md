@@ -227,7 +227,15 @@ failure with the combined CoreBluetooth name/service advertisement.
   use the ISO-639-2 language code `eng`; standard Android engines generally use `en`.
 - The app does not send reply text to an additional online TTS service. If there
   is no offline English voice, it displays the limitation rather than silently
-  sending private conversations to another provider.
+  sending private conversations to another provider. The unwired Edge Read Aloud
+  prototype is kept in `legacy/android/tts/`, outside the build.
+- Spoken replies go through `SpeechScript` (`app/protocol`, tested offline):
+  Markdown marks, tables, links, tags and emoji are removed; the reply is split
+  into sentences with short silent pauses between sentences, list items and
+  paragraphs; questions, exclamations and headings get small per-utterance
+  rate and pitch changes. Android `TextToSpeech` is not assumed to read SSML,
+  so no markup of any kind is handed to the engine. Captions still show the
+  reply as Muse sent it. Status changes once per reply, not per sentence.
 - Voice notes are limited to 15 seconds. Their transcript replaces the pending
   bubble only after the server message ID matches this device's submission ACK.
   Notes from other clients are not used as substitute transcripts.
@@ -264,6 +272,31 @@ failure with the combined CoreBluetooth name/service advertisement.
   timeout or backgrounding. No general shell or file tools are exposed.
 - This is a foreground prototype. Background wake words, arbitrary remote
   commands, OTA, and automatic startup at boot are not enabled.
+
+## Native Muse voice status
+
+Checked against the official SDK on 2026-10-11 for
+[issue 3](https://github.com/1chris2many/muse-portal-kit/issues/3):
+
+- Muse's own speech endpoint, `GET /api/voice/tts-stream` (older VMs:
+  `/voice/tts-stream`), streams MP3 for a message ID, but only for replies
+  produced with `output_modality: "voice"`. The server stopped serving those
+  turns (every one failed with a canned error), so upstream
+  [PR 12](https://github.com/facebookincubator/muse-gadget-sdk/pull/12) moved
+  gadgets to text replies and removed the fetch.
+  [PR 146](https://github.com/facebookincubator/muse-gadget-sdk/pull/146), which
+  requested voice output again with a device hint, was closed unmerged.
+- [Issue 14](https://github.com/facebookincubator/muse-gadget-sdk/issues/14):
+  the maintainer says a gadget voice pipeline is in progress and recommends a
+  TTS of your choice meanwhile. No SSML, prosody or voice-selection control
+  exists anywhere in the SDK; MP3 is the only speech format it has handled.
+- [PR 139](https://github.com/facebookincubator/muse-gadget-sdk/pull/139) (open)
+  shows the client contract if the endpoint returns: one stream per message ID,
+  a 404 fallback path, cancellation by resetting the stream, bounded buffers.
+- This app therefore keeps the installed on-device voice. Re-check when
+  issue 14 is updated. A native stream would plug into `voiceReply` in
+  `MuseConnection`, still behind `PortalReplyRouter`; nothing else would
+  authorize playback.
 
 ## Rich content from Muse
 
