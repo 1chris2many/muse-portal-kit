@@ -95,13 +95,15 @@ object SpeechScript {
 
     private fun lines(reply: String): List<Line> {
         var text = reply.replace("\r\n", "\n").replace('\r', '\n')
+        // Entities are decoded first so that encoded markup (&lt;speak&gt;) meets the
+        // tag cleanup below instead of reaching the engine; "a &lt; b" stays a comparison.
+        text = entities(text)
         text = FENCE.replace(text) { "\n" + it.groupValues[1] + "\n" }
         text = AUTOLINK.replace(text) { host(it.groupValues[1]) }
         text = TAG.replace(text, " ")
         text = IMAGE.replace(text) { it.groupValues[1] }
         text = LINK.replace(text) { it.groupValues[1] }
         text = URL.replace(text) { host(it.value) }
-        text = entities(text)
 
         val out = ArrayList<Line>()
         for (raw in text.split('\n')) {
@@ -145,10 +147,14 @@ object SpeechScript {
     }
 
     private fun inline(line: String): String {
-        var s = STAR.replace(line, "")
+        // Paired emphasis loses its marks; a star between operands is arithmetic and is
+        // read as "times"; any other lone star stays literal rather than fusing its neighbours.
+        var s = STAR_EMPHASIS.replace(line) { it.groupValues[1] }
+        s = TIMES.replace(s, " times ")
         s = s.replace("`", "").replace("~~", "")
         s = UNDERSCORE_EMPHASIS.replace(s) { it.groupValues[1] }
         s = symbols(s)
+        s = TAG.replace(s, " ")
         return WHITESPACE.replace(s, " ").trim()
     }
 
@@ -220,9 +226,14 @@ object SpeechScript {
         return (if (host.isEmpty()) "" else host) + trailing
     }
 
-    private fun entities(text: String): String = text
-        .replace("&nbsp;", " ").replace("&quot;", "\"").replace("&#39;", "'").replace("&apos;", "'")
-        .replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+    private fun entities(text: String): String {
+        var s = NUMERIC_ENTITY.replace(text) { m ->
+            val code = if (m.groupValues[1].isNotEmpty()) m.groupValues[1].toIntOrNull(16) else m.groupValues[2].toIntOrNull()
+            if (code != null && code in 1..0x10FFFF && code !in 0xD800..0xDFFF) String(Character.toChars(code)) else " "
+        }
+        for ((name, value) in NAMED_ENTITIES) s = s.replace(name, value)
+        return s
+    }
 
     /** Drops emoji and pictographs; reads the two common arrows as "to". */
     private fun symbols(text: String): String {
@@ -257,7 +268,12 @@ object SpeechScript {
     private val QUOTE = Regex("^(>\\s?)+")
     private val BULLET = Regex("^[-+*•]\\s+")
     private val NUMBERED = Regex("^\\d{1,3}[.)]\\s+")
-    private val STAR = Regex("(?<=\\S)\\*+|\\*+(?=\\S)")
+    private val STAR_EMPHASIS = Regex("\\*{1,3}(\\S(?:[^*\\n]*?\\S)?)\\*{1,3}")
+    private val TIMES = Regex("(?<=[\\d)])\\s*\\*\\s*(?=[\\d(])")
+    private val NUMERIC_ENTITY = Regex("&#(?:[xX]([0-9A-Fa-f]{1,6})|([0-9]{1,7}));")
+    private val NAMED_ENTITIES = listOf(
+        "&nbsp;" to " ", "&quot;" to "\"", "&apos;" to "'", "&lt;" to "<", "&gt;" to ">", "&amp;" to "&",
+    )
     private val UNDERSCORE_EMPHASIS = Regex("(?<![\\w])_{1,2}(\\S(?:[^_]*?\\S)?)_{1,2}(?![\\w])")
     private val WHITESPACE = Regex("[ \\t\\u00A0]+")
     private val CLAUSE_END = Regex("[,;:]\\s")

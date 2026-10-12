@@ -16,8 +16,8 @@ class SpeechScriptTest {
     }
 
     @Test fun `inline punctuation that is not markup survives`() {
-        assertEquals("Score 2-1, pick #1, a > b, 2 * 3, snake_case_name.",
-            SpeechScript.plain("Score 2-1, pick #1, a > b, 2 * 3, snake_case_name."))
+        assertEquals("Score 2-1, pick #1, a > b, snake_case_name.",
+            SpeechScript.plain("Score 2-1, pick #1, a > b, snake_case_name."))
         assertEquals("1. First\n2. Second", SpeechScript.plain("1. First\n2. Second"))
     }
 
@@ -44,8 +44,28 @@ class SpeechScriptTest {
         assertEquals("Hi there", plain)
         assertFalse(plain.contains('<'))
         assertFalse(plain.contains('>'))
-        assertEquals("Tom &amp; Jerry \"quoted\"".let { "Tom & Jerry \"quoted\"" },
-            SpeechScript.plain("Tom &amp; Jerry &quot;quoted&quot;"))
+        assertEquals("Tom & Jerry \"quoted\"", SpeechScript.plain("Tom &amp; Jerry &quot;quoted&quot;"))
+    }
+
+    @Test fun `encoded markup is decoded and then dropped while comparisons survive`() {
+        assertEquals("Hi", SpeechScript.plain("&lt;speak&gt;Hi&lt;/speak&gt;"))
+        assertEquals("Hi there", SpeechScript.plain("&#60;prosody rate=\"fast\"&#62;Hi&#x3C;/prosody&#x3E; there"))
+        assertEquals("a < b and c > d", SpeechScript.plain("a &lt; b and c &gt; d"))
+        assertEquals("5 > 3 < 9", SpeechScript.plain("5 > 3 < 9"))
+        val everything = SpeechScript.plain("**&lt;speak&gt;** `&lt;break/&gt;` _&#60;b&#62;_")
+        assertFalse(everything.contains('<'))
+        assertFalse(everything.contains('>'))
+    }
+
+    @Test fun `literal arithmetic keeps its operators`() {
+        assertEquals("2 times 3 = 6", SpeechScript.plain("2*3 = 6"))
+        assertEquals("2 times 3 = 6", SpeechScript.plain("2 * 3 = 6"))
+        assertEquals("(a+b) times (c+d)", SpeechScript.plain("(a+b)*(c+d)"))
+        assertEquals("x = a * 2", SpeechScript.plain("`x = a * 2`"))
+        assertEquals("total = price * qty", SpeechScript.plain("```python\ntotal = price * qty\n```"))
+        assertEquals("bold and 2 times 3", SpeechScript.plain("**bold** and 2*3"))
+        assertEquals("note, lone", SpeechScript.plain("*note*, lone"))
+        assertEquals("*unpaired star", SpeechScript.plain("*unpaired star"))
     }
 
     @Test fun `code fences keep their content without the fence`() {
