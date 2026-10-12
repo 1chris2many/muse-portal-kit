@@ -44,7 +44,7 @@ class PortalDashboardTest {
         measure(ui)
         assertFalse(ui.typingControlsVisible)
         assertFalse(ui.messageInput.isShown)
-        listOf(ui.talkButton, ui.settingsButton, ui.clearButton, ui.stopAudioButton, ui.cameraButton)
+        listOf(ui.talkButton, ui.wakeButton, ui.settingsButton, ui.clearButton, ui.stopAudioButton, ui.cameraButton)
             .forEach { assertInside(ui, it, 48) }
         assertInside(ui, ui.micState)
     }
@@ -60,11 +60,13 @@ class PortalDashboardTest {
 
     @Test fun longStatusMessagesDoNotPushTalkOffScreen() {
         val ui = dashboard()
+        ui.wakeButton.text = "Wake starting"
         ui.connectionDetail.text = "A connection status line that wraps. ".repeat(12)
         ui.audioState.text = "An audio capability status that wraps. ".repeat(8)
         ui.cameraState.text = "A camera status that wraps. ".repeat(8)
         measure(ui)
         assertInside(ui, ui.talkButton, 88)
+        assertInside(ui, ui.wakeButton, 48)
         assertInside(ui, ui.micState)
     }
 
@@ -79,6 +81,19 @@ class PortalDashboardTest {
         assertInside(ui, ui.micState)
         ui.setTypingControlsVisible(false)
         assertFalse(ui.typingControlsVisible)
+    }
+
+    @Test fun handsFreeInstructionDoesNotAskForARelease() {
+        val ui = dashboard()
+        ui.setConnectionState(true)
+        ui.talkButton.setListening(true, handsFree = true)
+        measure(ui)
+        assertInside(ui, ui.talkButton, 88)
+        assertEquals("Listening hands-free. Pause to send; Stop to cancel", ui.talkButton.contentDescription)
+        ui.talkButton.setListening(true)
+        assertEquals("Listening. Release to send voice note", ui.talkButton.contentDescription)
+        ui.talkButton.setListening(false)
+        assertEquals("Hold to talk", ui.talkButton.contentDescription)
     }
 
     private fun descendants(root: View): List<View> = listOf(root) +

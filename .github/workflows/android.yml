@@ -22,6 +22,7 @@ jobs:
       - run: ./gradlew :protocol:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --no-daemon --console=plain
         working-directory: app
       - run: python3 -m unittest discover -s tools -p 'test_portal_dev.py'
+      - run: python3 -m unittest discover -s tools -p 'test_prepare_wake_model.py'
   mac-pairing-helper:
     runs-on: macos-latest
     steps:

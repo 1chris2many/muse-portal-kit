@@ -47,9 +47,81 @@ investigate a supported export or bridge and document the remaining gap.
 Today, hold Talk, speak, and release. Voice notes go to your existing Muse account;
 server transcripts appear on this device. Replies appear only when the server
 explicitly links them to a request from this Portal. Voice-linked replies can use
-an installed offline Android voice. The current build has no always-listening
-microphone or continuous camera stream. The goals above describe the intended
+an installed offline Android voice. The microphone is off by default; an optional
+foreground-only local wake prototype is described below. There is no continuous
+camera stream. The goals above describe the intended
 product; the sections below distinguish implemented behavior from planned work.
+
+### Experimental local wake word
+
+Version 0.4.0 adds **opt-in “Nova” detection**, not background listening. Build the
+model-enabled candidate explicitly from the repository root:
+
+```bash
+python3 tools/prepare_wake_model.py
+./app/gradlew -p app :protocol:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+```
+
+The preparation script downloads the public `vosk-model-small-en-us-0.15` archive,
+verifies SHA-256 `30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498`,
+and stages ignored APK assets. Existing model directories are never overwritten.
+The [model listing](https://alphacephei.com/vosk/models) identifies this model as
+Apache-2.0; the [Vosk Android engine](https://github.com/alphacep/vosk-api) is also
+Apache-2.0. The app uses Vosk 0.3.75 and JNA 5.18.1. Model binaries are not committed;
+ordinary CI builds without assets and will explain that wake listening is unavailable.
+The prepared model adds approximately 71 MB of uncompressed assets. There is no
+runtime model download or additional cloud recognizer.
+
+After installation, tap **Wake off → Enable**. Say **“Nova”**, pause for the
+**LISTENING** indicator, then speak. This first version deliberately does not
+capture a command in the same breath as the wake word. It ends the note after
+1.2 seconds below the local energy threshold, at 15 seconds maximum, or discards
+an empty wake after 5 seconds. Noise above the threshold can count as speech;
+this is not a robust speech/noise classifier. Hold to talk remains available.
+
+- Wake-monitor audio stays in memory on the Portal. It is never uploaded, logged
+  or saved. Only the separately recorded post-wake note uses the normal Muse send path.
+- Session-only opt-in resets when leaving/restarting the app. Physical microphone
+  mute, missing permission, disconnection, recording and TTS pause the listener.
+  **Wake off** disables it; **Stop** cancels the current capture/playback.
+- Clear, mute, leaving the app and reconnect invalidate pending captures. A stale
+  worker callback cannot send an old recording after another capture starts.
+- This is **not voice identification or access control**. Anyone in earshot could
+  trigger it. Existing device-only reply checks remain unchanged, including failing
+  closed when Muse omits reply-parent metadata.
+
+Automated policy, cancellation, endpoint and layout tests pass. An offline Linux
+smoke run using Vosk's Python 0.3.45 binding and the same model passed two synthetic
+“Nova” voices and nine negative/silence cases. The full local vocabulary is important:
+a narrow Nova/unknown grammar misclassified similar words during development.
+This host smoke test does not exercise the Android 0.3.75 binding or hardware.
+To reproduce with generated, non-personal fixture files (never played aloud):
+
+```bash
+# macOS; destination must not already contain these fixtures
+python3 tools/wake_acoustic_smoke.py --generate /path/to/synthetic-fixtures
+# Linux environment with vosk==0.3.45 installed, same downloaded model
+python3 tools/wake_acoustic_smoke.py --fixtures /path/to/synthetic-fixtures --model /path/to/wake-vosk
+```
+
+Real Portal
+false-wake/missed-wake rates, distance, TV/background speech, physical-mute behavior,
+CPU/thermal load and end-to-end owner interaction still require acceptance testing.
+Do not treat an APK build as acoustic validation or enable it unattended. No
+synthetic prompts should be sent to an owner's Muse conversation for testing.
+
+### Reply-options component (offline development slice)
+
+`ReplyOptionsGate` and `ReplyOptionsView` implement bounded native option buttons
+with exact-label taps, request/device/conversation checks, expiry, replay handling
+and clearing. They are **not connected to incoming Muse payloads yet**. The
+`options` content shape is a proposed addressed-delivery format, not a claim that
+the gadget SDK exports `muse.create_options` widgets. The view cannot send a
+message itself. Integration must validate every tap through the gate on its
+executor, then send the exact selected label as a fresh local text input; it must
+also clear both the gate and view on background, reconnect and privacy clear.
+Protocol and Android 9 view fixtures exercise this component without opening a
+Portal connection. See issue [#2](https://github.com/1chris2many/muse-portal-kit/issues/2).
 
 ## Architecture
 
