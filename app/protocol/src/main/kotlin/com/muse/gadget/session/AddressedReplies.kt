@@ -30,6 +30,9 @@ class AddressedReplies(
     private data class Seen(val envelope: Envelope, var receipt: Receipt)
     private val inputs = LinkedHashMap<String, Input>()
     private val used = HashSet<String>()
+    // Keep ACK ownership after consumption/expiry so a reused native ID cannot
+    // authorize another input in this generation.
+    private val nativeOwners = HashMap<String, String>()
     private val receipts = LinkedHashMap<String, Seen>()
     var generation: String = nonce()
         private set
@@ -49,10 +52,12 @@ class AddressedReplies(
     fun acknowledge(id: String, nativeId: String) {
         prune()
         val input = inputs[id] ?: return
-        if (!validId(nativeId) || inputs.any { it.key != id && it.value.messageId == nativeId }) {
-            inputs.remove(id); return
+        if (!validId(nativeId)) { inputs.remove(id); return }
+        nativeOwners[nativeId]?.takeIf { it != id }?.let { previous ->
+            inputs.remove(previous); inputs.remove(id); return
         }
         if (input.messageId != null && input.messageId != nativeId) { inputs.remove(id); return }
+        nativeOwners[nativeId] = id
         input.messageId = nativeId
     }
 
@@ -130,7 +135,7 @@ class AddressedReplies(
     }
     fun setForeground(value: Boolean) { foreground = value }
     fun revoke(isForeground: Boolean) {
-        generation = nonce(); inputs.clear(); used.clear(); receipts.clear(); foreground = isForeground
+        generation = nonce(); inputs.clear(); used.clear(); nativeOwners.clear(); receipts.clear(); foreground = isForeground
     }
     private fun prune() { inputs.entries.removeAll { now() >= it.value.expires } }
     private fun validId(s: String): Boolean = s.length in 1..128 && s.all { it.isLetterOrDigit() || it in "-_.:" }

@@ -130,6 +130,15 @@ class AddressedRepliesTest {
         input(); gate.begin("req2", AddressedReplies.Kind.TEXT, "other")
         gate.acknowledge("req2", "native-req")
         reject("no_unique_canonical_request") { gate.read(exactText = "other") }
+        reject("no_unique_canonical_request") { gate.read(exactText = "actual input") }
+        assertNull(gate.acceptNative("native-req", true))
+    }
+    @Test fun `consumed native ack cannot be reused for a new local input`() {
+        input(); gate.acceptNative("native-req", true)
+        gate.begin("req2", AddressedReplies.Kind.TEXT, "other")
+        gate.acknowledge("req2", "native-req")
+        reject("no_unique_canonical_request") { gate.read(exactText = "other") }
+        assertNull(gate.acceptNative("native-req", true))
     }
     @Test fun `evicted request cannot reappear via delayed ack`() {
         input()
