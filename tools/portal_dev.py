@@ -15,11 +15,13 @@ import threading
 import time
 import uuid
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 
 
 class PortalDevelopment:
     ACTIONS = ("portal.files", "portal.read", "portal.write", "portal.diff",
-               "portal.build", "portal.status", "portal.install", "portal.rollback", "portal.camera")
+               "portal.build", "portal.status", "portal.install", "portal.rollback", "portal.camera",
+               "portal.requests.read", "portal.deliver", "portal.delivery.status")
 
     def __init__(self, workspace, state, image, adb, serial, sdk, keystore):
         self.workspace=Path(workspace).resolve()
@@ -73,9 +75,18 @@ class PortalDevelopment:
         if action not in self.ACTIONS or not isinstance(args,dict):raise ValueError("Unknown Portal action")
         allowed={"portal.files":set(),"portal.read":{"path"},"portal.write":{"path","content","expected_sha256"},
                  "portal.diff":set(),"portal.build":set(),"portal.status":{"job_id"},
-                 "portal.install":{"job_id"},"portal.rollback":set(),"portal.camera":set()}
+                 "portal.install":{"job_id"},"portal.rollback":set(),"portal.camera":set(),
+                 "portal.requests.read":{"exact_text","upload_sha256"},
+                 "portal.deliver":{"version","delivery_id","device_id","conversation_id","generation","request_id","input_message_id","content"},
+                 "portal.delivery.status":{"delivery_id"}}
         if set(args)-allowed[action]:raise ValueError("Unexpected arguments")
         if action=="portal.camera":return self.camera()
+        if action in ("portal.requests.read","portal.deliver","portal.delivery.status"):
+            path={"portal.requests.read":"/requests/read","portal.deliver":"/deliver","portal.delivery.status":"/delivery/status"}[action]
+            body=json.dumps(args,ensure_ascii=False,separators=(",",":")).encode()
+            maximum=6*1024*1024 if action=="portal.deliver" else 65536
+            if len(body)>maximum:raise ValueError("Portal delivery payload exceeds action size bound")
+            return self.bridge_request(path,body)
         if action=="portal.files":
             names=self.run(["/usr/bin/git","ls-files","--cached","--others","--exclude-standard"],cwd=self.workspace).splitlines()
             files=[]
@@ -152,13 +163,14 @@ class PortalDevelopment:
                   "--network","none","--cap-drop=ALL","--security-opt=no-new-privileges",
                   "--pids-limit","512","--memory","4g","--cpus","4",
                   "--mount",f"type=bind,src={root/'source'},dst=/workspace",
-                  self.image,"gradle","-p","app",":protocol:test",":app:assembleDebug",
+                  self.image,"gradle","-p","app",":protocol:test",":app:testDebugUnitTest",":app:lintDebug",":app:assembleDebug",
                   "--offline","--no-daemon","--console=plain"]
             with (root/"build.log").open("w") as log:
                 p=subprocess.run(argv,stdout=log,stderr=subprocess.STDOUT,timeout=900,shell=False)
             if p.returncode:raise ValueError("Build or tests failed; see log_tail")
             apk=root/"source/app/app/build/outputs/apk/debug/app-debug.apk"
-            if apk.is_symlink() or not apk.resolve().is_relative_to(root/"source") or apk.stat().st_size>80*1024*1024:raise ValueError("Invalid APK artifact")
+            # Reviewed Vosk ABIs plus the bundled public model make the debug APK ~89 MiB.
+            if apk.is_symlink() or not apk.resolve().is_relative_to(root/"source") or apk.stat().st_size>128*1024*1024:raise ValueError("Invalid APK artifact")
             shutil.copyfile(apk,root/"portal.apk")
             self.record(job,{"job_id":job,"status":"passed","sha256":self.digest((root/"portal.apk").read_bytes()),"finished_at":time.time()})
         except Exception as e:
@@ -192,18 +204,32 @@ class PortalDevelopment:
                 "verification":"APK installed and activity started; confirm reconnect and changed behavior on the device."}
 
     def camera(self):
+        return self.bridge_request("/camera",b"")
+
+    def bridge_request(self,path,body):
+        if path not in ("/camera","/requests/read","/deliver","/delivery/status"):
+            raise ValueError("Unknown Portal bridge path")
         adb=[self.adb,"-s",self.serial]
         # Consume the app-private credential internally, never return or log it.
         config=json.loads(self.run(adb+["shell","run-as","com.muse.gadget.portal","cat","no_backup/portal-bridge.json"]))
         port=config.get("port");token=config.get("token")
         if type(port)!=int or not 1024<=port<=65535 or not isinstance(token,str) or not re.fullmatch("[a-f0-9]{64}",token):raise ValueError("Invalid Portal bridge configuration")
         forward=self.run(adb+["forward","tcp:0",f"tcp:{port}"]).strip()
-        if not forward.isdigit():raise ValueError("Could not establish USB camera forwarding")
+        if not forward.isdigit():raise ValueError("Could not establish USB Portal forwarding")
         try:
-            req=Request(f"http://127.0.0.1:{forward}/camera",data=b"",headers={"Authorization":"Bearer "+token})
-            with urlopen(req,timeout=15) as response:
-                body=response.read(200000)
-                result=json.loads(body)
-                if not result.get("ok"):raise ValueError("Portal camera capture failed")
-                return result
+            req=Request(f"http://127.0.0.1:{forward}{path}",data=body,
+                headers={"Authorization":"Bearer "+token,"Content-Type":"application/json"})
+            try:
+                with urlopen(req,timeout=15) as response:
+                    received=response.read(200001)
+            except HTTPError as exc:
+                # Only bounded machine error codes leave the adapter, never the request or credential.
+                try:code=json.loads(exc.read(4096)).get("error","")
+                except Exception:code=""
+                if not isinstance(code,str) or not re.fullmatch(r"[a-z_]{1,80}",code):code="portal_request_rejected"
+                raise ValueError(code) from None
+            if len(received)>200000:raise ValueError("Portal response exceeded bound")
+            result=json.loads(received)
+            if not result.get("ok"):raise ValueError("Portal request failed")
+            return result
         finally:self.run(adb+["forward","--remove",f"tcp:{forward}"])

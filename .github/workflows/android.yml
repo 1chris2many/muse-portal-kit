@@ -19,11 +19,12 @@ jobs:
           packages: platform-tools
           log-accepted-android-sdk-licenses: false
       - run: sdkmanager 'platforms;android-35' 'build-tools;34.0.0'
-      - run: ./gradlew :protocol:test :app:lintDebug :app:assembleDebug --no-daemon --console=plain
+      - run: ./gradlew :protocol:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --no-daemon --console=plain
         working-directory: app
       - run: python3 -m unittest discover -s tools -p 'test_portal_dev.py'
       - name: Offline addressed delivery contract
         run: python3 -m unittest discover -s design -p 'test_*.py'
+      - run: python3 -m unittest discover -s tools -p 'test_prepare_wake_model.py'
   mac-pairing-helper:
     runs-on: macos-latest
     steps:

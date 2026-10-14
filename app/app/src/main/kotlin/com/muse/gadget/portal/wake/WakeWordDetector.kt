@@ -1,11 +1,9 @@
 package com.muse.gadget.portal.wake
 
 /**
- * Abstraction over the wake-word engine. v1 implementation is
- * [OpenWakeWordDetector] (openwakeword-android, ONNX Runtime, fully on-device).
- *
- * The interface exists so the engine can be swapped (or faked in tests)
- * without touching [com.muse.gadget.portal.voice.VoiceService].
+ * Historical prototype interface; not wired to the foreground app.
+ * The opt-in prototype uses [VoskWakeWordDetector] with lifecycle gating in
+ * [com.muse.gadget.portal.ui.PortalActivity]. No background VoiceService is started.
  */
 interface WakeWordDetector {
     /** Detection threshold in [0, 1]; higher = fewer false wakes. Default 0.5. */

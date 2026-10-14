@@ -1,7 +1,9 @@
-"""Offline text-only reference model, not a server or production authorization.
+"""Historical offline text-only model, not version-0.4.2 production behavior.
 
 The caller supplies a verified auth result to model the adapter boundary. No
 network, device, credentials, message transport, file writes or real audio.
+Synthetic five-minute expiry and abstract photo/widget inputs differ from the
+production Kotlin implementation. See ADDRESSABLE_DELIVERY.md for the scope.
 """
 from dataclasses import dataclass
 import hashlib

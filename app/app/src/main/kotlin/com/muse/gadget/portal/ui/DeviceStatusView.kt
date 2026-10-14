@@ -5,48 +5,137 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
+import android.graphics.Typeface
 import android.view.View
+import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
 
-/** Original Android rendering of the SDK's status-ring / level-meter pattern.
- * No avatar assets or LVGL implementation are copied. All state is observable
- * local device activity; shared agent busy events never imply our turn is active.
+/**
+ * A readable status surface for a shared-room display. Its ring and meter describe only local,
+ * observed device state; they never imply that Muse is thinking, listening, or speaking elsewhere.
  */
-class DeviceStatusView(context:Context):View(context) {
-    private val ink=Paint(Paint.ANTI_ALIAS_FLAG)
-    private var phase="CONNECTING"
-    private var caption="Opening the secure connection"
-    private var level=0f
-    private var progress=0f
-    private val accent=Color.rgb(167,125,255)
-    fun show(phase:String,caption:String,level:Float=0f,progress:Float=0f) {
-        this.phase=phase;this.caption=caption
-        this.level=level.coerceIn(0f,1f);this.progress=progress.coerceIn(0f,1f)
-        contentDescription="$phase. $caption"
+class DeviceStatusView(context: Context) : View(context) {
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
+    private val text = Paint(Paint.ANTI_ALIAS_FLAG)
+    private var phase = "CONNECTING"
+    private var caption = "Opening the secure connection"
+    private var level = 0f
+    private var progress = 0f
+
+    init {
+        contentDescription = "$phase. $caption"
+        minimumHeight = context.dp(108)
+    }
+
+    fun show(phase: String, caption: String, level: Float = 0f, progress: Float = 0f) {
+        this.phase = phase
+        this.caption = caption
+        this.level = level.coerceIn(0f, 1f)
+        this.progress = progress.coerceIn(0f, 1f)
+        contentDescription = "$phase. $caption"
         invalidate()
     }
-    override fun onDraw(canvas:Canvas) {
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        setMeasuredDimension(
+            resolveSize(context.dp(300), widthMeasureSpec),
+            resolveSize(context.dp(118), heightMeasureSpec),
+        )
+    }
+
+    override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        val h=height.toFloat();val radius=h*.32f;val cx=h*.52f;val cy=h*.5f
-        ink.style=Paint.Style.FILL;ink.color=Color.rgb(20,15,34)
-        canvas.drawRoundRect(0f,0f,width.toFloat(),h,24f,24f,ink)
-        ink.style=Paint.Style.STROKE;ink.strokeWidth=5f;ink.color=Color.rgb(58,51,88)
-        canvas.drawCircle(cx,cy,radius,ink)
-        ink.color=accent
-        canvas.drawArc(RectF(cx-radius,cy-radius,cx+radius,cy+radius),-90f,
-            if(phase=="LISTENING")360f*progress else 270f,false,ink)
-        ink.style=Paint.Style.FILL
-        for(i in 0..6) {
-            val bar=if(phase=="LISTENING")8f+level*26f*(1f-kotlin.math.abs(i-3)/5f) else 8f
-            val x=cx+(i-3)*9f
-            canvas.drawRoundRect(x-2.5f,cy-bar/2,x+2.5f,cy+bar/2,2f,2f,ink)
+        val width = width.toFloat()
+        val height = height.toFloat()
+        val radius = min(height * 0.3f, context.dp(35).toFloat())
+        val centerX = context.dp(18).toFloat() + radius
+        val centerY = height / 2f
+        val accent = when (phase) {
+            "LISTENING" -> PortalPalette.ACCENT
+            "SPEAKING" -> PortalPalette.LILAC
+            "SENT" -> PortalPalette.ACCENT
+            "OFFLINE" -> PortalPalette.DANGER
+            "READY" -> PortalPalette.ACCENT
+            else -> PortalPalette.LILAC
         }
-        val left=h+12f
-        ink.color=Color.rgb(242,239,255);ink.typeface=android.graphics.Typeface.DEFAULT_BOLD
-        ink.textSize=24f*resources.displayMetrics.scaledDensity
-        canvas.drawText(phase,left,h*.45f,ink)
-        ink.typeface=android.graphics.Typeface.DEFAULT
-        ink.textSize=14f*resources.displayMetrics.scaledDensity;ink.color=Color.rgb(216,210,255)
-        val count=ink.breakText(caption,true,(width-left-20f).coerceAtLeast(0f),null)
-        canvas.drawText(caption.take(count),left,h*.72f,ink)
+
+        fill.color = PortalPalette.SURFACE_ELEVATED
+        canvas.drawRoundRect(RectF(0f, 0f, width, height), context.dp(22).toFloat(), context.dp(22).toFloat(), fill)
+        stroke.color = PortalPalette.BORDER
+        stroke.strokeWidth = context.dp(1).toFloat()
+        canvas.drawRoundRect(RectF(0.5f, 0.5f, width - 0.5f, height - 0.5f), context.dp(22).toFloat(), context.dp(22).toFloat(), stroke)
+
+        stroke.strokeWidth = context.dp(5).toFloat()
+        stroke.color = Color.rgb(62, 79, 105)
+        canvas.drawCircle(centerX, centerY, radius, stroke)
+        stroke.color = accent
+        val sweep = if (phase == "LISTENING") 360f * progress else 270f
+        canvas.drawArc(RectF(centerX - radius, centerY - radius, centerX + radius, centerY + radius), -90f, sweep, false, stroke)
+
+        if (phase == "LISTENING") {
+            fill.color = Color.argb(34 + (level * 70).toInt(), Color.red(accent), Color.green(accent), Color.blue(accent))
+            canvas.drawCircle(centerX, centerY, max(context.dp(12).toFloat(), radius * (0.34f + level * 0.38f)), fill)
+        }
+        drawMeter(canvas, centerX, centerY, accent)
+
+        val startX = centerX + radius + context.dp(20)
+        text.typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        text.textSize = context.spPx(14f)
+        text.color = accent
+        text.letterSpacing = 0.08f
+        canvas.drawText(phase, startX, centerY - context.dp(13), text)
+        text.typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+        text.textSize = context.spPx(15f)
+        text.color = PortalPalette.TEXT_PRIMARY
+        text.letterSpacing = 0f
+        drawWrappedText(canvas, caption, startX, centerY + context.dp(10), width - startX - context.dp(16), 2)
+    }
+
+    private fun drawMeter(canvas: Canvas, x: Float, y: Float, accent: Int) {
+        val barWidth = context.dp(4).toFloat()
+        val spacing = context.dp(7).toFloat()
+        fill.color = accent
+        for (index in 0 until 5) {
+            val position = index - 2
+            val target = if (phase == "LISTENING") {
+                context.dp(9).toFloat() + level * context.dp(28) * (1f - abs(position) / 4.5f)
+            } else {
+                context.dp(8).toFloat()
+            }
+            val barHeight = max(context.dp(7).toFloat(), target)
+            val barX = x + position * spacing
+            canvas.drawRoundRect(
+                barX - barWidth / 2f,
+                y - barHeight / 2f,
+                barX + barWidth / 2f,
+                y + barHeight / 2f,
+                barWidth,
+                barWidth,
+                fill,
+            )
+        }
+    }
+
+    private fun drawWrappedText(canvas: Canvas, value: String, x: Float, baseline: Float, maxWidth: Float, maxLines: Int) {
+        if (maxWidth <= 0f) return
+        val words = value.trim().split(Regex("\\s+"))
+        val lines = mutableListOf<String>()
+        var line = ""
+        for (word in words) {
+            val candidate = if (line.isEmpty()) word else "$line $word"
+            if (text.measureText(candidate) <= maxWidth || line.isEmpty()) {
+                line = candidate
+            } else {
+                lines += line
+                line = word
+                if (lines.size == maxLines) break
+            }
+        }
+        if (line.isNotEmpty() && lines.size < maxLines) lines += line
+        lines.take(maxLines).forEachIndexed { index, lineText ->
+            canvas.drawText(lineText, x, baseline + index * context.dp(20), text)
+        }
     }
 }

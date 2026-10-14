@@ -50,3 +50,5 @@ Thumbs.db
 # ---- Research inputs (private notes, may contain personal data) ----
 research-findings.md
 protocol-spec.md
+# Reproducibly fetched by tools/prepare_wake_model.py; do not check model binaries into git.
+app/app/src/main/assets/wake-vosk/

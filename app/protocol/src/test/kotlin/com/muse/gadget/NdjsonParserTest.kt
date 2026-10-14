@@ -132,4 +132,24 @@ class NdjsonParserTest {
         )
         assertEquals(Event.MessageDone("m1", "abc"), e2.last())
     }
+
+    @Test
+    fun `presentation events report kinds and parent without content`() {
+        val p = SubscribeParser()
+        val events = feed(
+            p,
+            """{"type":"event","seq":1,"event":"delta.presentation","payload":{"message_id":"m9","reply_to_message_id":"u1","fallback_text":"A chart","data":{"images":[{"mime":"image/png","path":"sandbox://workspace/your_files/c.png"}]}}}""",
+            """{"type":"event","seq":2,"event":"delta.presentation","payload":{"message_id":"m10","data":{"html":"<form></form>","audio":{"mime":"audio/mpeg","path":"sandbox://x.mp3"}}}}""",
+            """{"type":"event","seq":3,"event":"delta.presentation","payload":{"message_id":"m11","data":{"videos":[]}}}""",
+            """{"type":"ack","seq":4,"event":"delta.presentation","payload":{"message_id":"m12","data":{"images":[{}]}}}""",
+        )
+        assertEquals(
+            listOf(
+                Event.Presentation("m9", listOf("image"), "u1"),
+                Event.Presentation("m10", listOf("audio", "html")),
+                Event.Presentation("m11", emptyList()),
+            ),
+            events,
+        )
+    }
 }

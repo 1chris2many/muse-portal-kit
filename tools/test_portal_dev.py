@@ -1,6 +1,7 @@
 import tempfile
 from pathlib import Path
 import unittest
+import json
 from unittest.mock import patch
 from portal_dev import PortalDevelopment
 
@@ -26,6 +27,36 @@ class PortalDevelopmentTests(unittest.TestCase):
         self.assertEqual(self.dev.dispatch("portal.read",{"path":path})["sha256"],r2["sha256"])
     def test_extra_args_rejected(self):
         with self.assertRaises(ValueError):self.dev.dispatch("portal.build",{"command":"arbitrary"})
+    def test_delivery_actions_map_only_fixed_paths(self):
+        cases=(("portal.requests.read",{"exact_text":"fixture"},"/requests/read"),
+               ("portal.deliver",{"version":1,"content":[]},"/deliver"),
+               ("portal.delivery.status",{"delivery_id":"d"},"/delivery/status"))
+        for action,args,path in cases:
+            with patch.object(self.dev,"bridge_request",return_value={"ok":True}) as proxy:
+                self.assertEqual({"ok":True},self.dev.dispatch(action,args))
+                self.assertEqual(path,proxy.call_args.args[0])
+                self.assertEqual(args,json.loads(proxy.call_args.args[1]))
+    def test_delivery_cannot_select_host_or_force_speech(self):
+        for action,args in (("portal.deliver",{"speak":True}),
+                            ("portal.requests.read",{"latest":True}),
+                            ("portal.delivery.status",{"path":"/camera"})):
+            with self.assertRaises(ValueError):self.dev.dispatch(action,args)
+    def test_delivery_body_bound_before_forwarding(self):
+        with patch.object(self.dev,"bridge_request") as proxy:
+            with self.assertRaises(ValueError):self.dev.dispatch("portal.requests.read",{"exact_text":"x"*65536})
+            proxy.assert_not_called()
+    def test_generic_proxy_cannot_be_repurposed(self):
+        with patch.object(self.dev,"run") as run:
+            with self.assertRaises(ValueError):self.dev.bridge_request("http://other-host/",b"")
+            run.assert_not_called()
+    def test_inline_media_delivery_has_separate_bounded_body(self):
+        with patch.object(self.dev,"bridge_request",return_value={"ok":True}) as proxy:
+            self.dev.dispatch("portal.deliver",{"content":[{"type":"image","data_base64":"a"*100000}]})
+            self.assertEqual("/deliver",proxy.call_args.args[0])
+            proxy.reset_mock()
+            with self.assertRaises(ValueError):
+                self.dev.dispatch("portal.deliver",{"content":[{"data_base64":"a"*(6*1024*1024)}]})
+            proxy.assert_not_called()
     def test_install_requires_passed_build(self):
         job="a"*32;(self.dev.state/job).mkdir()
         self.dev.record(job,{"status":"failed"})

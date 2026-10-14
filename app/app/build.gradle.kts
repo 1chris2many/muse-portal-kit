@@ -6,6 +6,9 @@ plugins {
 }
 
 android {
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
     namespace = "com.muse.gadget.portal"
     compileSdk = 35
 
@@ -13,8 +16,8 @@ android {
         applicationId = "com.muse.gadget.portal"
         minSdk = 28 // Meta Portal (Android 9+)
         targetSdk = 34
-        versionCode = 2
-        versionName = "0.3.0"
+        versionCode = 5
+        versionName = "0.4.2"
         testInstrumentationRunner = "com.muse.gadget.portal.PortalSmokeInstrumentation"
     }
 
@@ -33,10 +36,14 @@ android {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.17")
     implementation(project(":protocol"))
 
-    // Edge-TTS transport (OkHttp WebSocket) + openWakeWord (ONNX Runtime).
+    // Muse transport (OkHttp WebSocket). The unwired Edge Read Aloud prototype is in /legacy/android/tts.
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.alphacephei:vosk-android:0.3.75@aar")
+    implementation("net.java.dev.jna:jna:5.18.1@aar")
 
     testImplementation(kotlin("test"))
     testImplementation("org.junit.jupiter:junit-jupiter-api:5.11.4")

@@ -48,4 +48,25 @@ class PortalReplyRouterTest {
         val done=parser.feedLine("""{"type":"event","seq":3,"event":"delta.message_done","payload":{"message_id":"reply","reply_to_message_id":"local"}}""").last() as SubscribeParser.Event.MessageDone
         assertNull(done.replyTo);assertFalse(router.receive(done).display)
     }
+    @Test fun presentationIsAnnouncedOnlyWhenLinkedAndNeverSpoken() {
+        val router=PortalReplyRouter();router.acknowledge("voice",true)
+        val linked=router.receivePresentation(SubscribeParser.Event.Presentation("m1",listOf("image"),"voice"))
+        assertTrue(linked.display);assertFalse(linked.speak)
+        assertEquals("Muse sent an image with this reply. Open the Muse app to view this attachment.",linked.text)
+        val again=router.receivePresentation(SubscribeParser.Event.Presentation("m1",listOf("image"),"voice"))
+        assertFalse(again.display)
+        for(event in listOf(SubscribeParser.Event.Presentation("h1",listOf("video")),SubscribeParser.Event.Presentation("h2",listOf("html"),"other-device"))) {
+            val result=router.receivePresentation(event);assertFalse(result.display);assertFalse(result.speak)
+        }
+        val text=router.receive(SubscribeParser.Event.MessageDone("m1","The chart text","voice"))
+        assertTrue(text.display);assertTrue(text.speak)
+    }
+    @Test fun lateAckReleasesPresentationNoteWithoutSpeech() {
+        val router=PortalReplyRouter()
+        assertFalse(router.receivePresentation(SubscribeParser.Event.Presentation("m2",listOf("audio","html"),"typed")).display)
+        val released=router.acknowledge("typed",true)
+        assertEquals(1,released.size);assertTrue(released.single().display);assertFalse(released.single().speak)
+        assertEquals(PortalReplyRouter.presentationNote(listOf("audio","html")),released.single().text)
+        assertEquals("Muse sent rich content with this reply. Open the Muse app to view this attachment.",PortalReplyRouter.presentationNote(emptyList()))
+    }
 }
